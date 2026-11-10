@@ -1,0 +1,52 @@
+{
+  "network": "hydration",
+  "chainId": 222222,
+  "rpc": "https://rpc.hydradx.cloud",
+  "rpcBatchSize": 100,
+  "reward": {
+    "symbol": "PRIME",
+    "assetId": 43,
+    "address": "0x000000000000000000000000000000010000002b",
+    "decimals": 6
+  },
+  "epoch": {
+    "snapshotsPerEpoch": 24
+  },
+  "markets": {
+    "main": {
+      "poolAddressesProvider": "0xf3Ba4D1b50f78301BDD7EAEa9B67822A15FCA691"
+    },
+    "gigahdx": {
+      "poolAddressesProvider": "0x3C7D7b74bB625736b93d859e332F06Df64635973"
+    },
+    "bil": {
+      "poolAddressesProvider": "0x653DFc382b74E7399dae06DC4d07202E28b5990B"
+    }
+  },
+  "supplyAssets": {
+    "HUSDC": {
+      "assetId": 1110,
+      "market": "main",
+      "underlying": "0x000000000000000000000000000000010000006e",
+      "aToken": "0x35774c305aaf441a102d47988d35f0f5428471b3",
+      "deployBlock": 9333147
+    },
+    "HUSDT": {
+      "assetId": 1111,
+      "market": "main",
+      "underlying": "0x000000000000000000000000000000010000006f",
+      "aToken": "0x1806860d27ee903c1ec7586d4f7d598d7591f124",
+      "deployBlock": 9333147
+    }
+  },
+  "debtAssets": {
+    "HOLLAR": {
+      "underlying": "0x531a654d1696ed52e7275a8cede955e82620f99a",
+      "decimals": 18
+    }
+  },
+  "logs": {
+    "maxBlockSpan": 10000,
+    "concurrency": 4
+  }
+}

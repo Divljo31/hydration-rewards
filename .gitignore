@@ -1,0 +1,13 @@
+node_modules/
+.env
+
+# Foundry build output and deploy records
+out/
+cache/
+broadcast/
+
+# Snapshots, epochs, trees and the holder index are produced by the job, not checked in.
+data/
+
+# Claude Code's local bookkeeping; the skill under .claude/skills is checked in.
+.claude/.cc-writes

@@ -1,0 +1,4 @@
+urd/=lib/universal-rewards-distributor/src/
+forge-std/=lib/universal-rewards-distributor/lib/forge-std/src/
+ds-test/=lib/universal-rewards-distributor/lib/forge-std/lib/ds-test/src/
+@openzeppelin/contracts/=lib/universal-rewards-distributor/lib/openzeppelin-contracts/contracts/

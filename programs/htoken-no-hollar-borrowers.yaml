@@ -1,0 +1,23 @@
+# PRIME on HUSDC and HUSDT, only for accounts that have not borrowed HOLLAR.
+# See programs/README.md for every setting.
+#
+# Check the effect before changing anything live:
+#   node src/preview.ts --program programs/htoken-no-hollar-borrowers.yaml
+
+name: HUSDC and HUSDT, no HOLLAR borrowers
+
+# PRIME per day for each earning asset, shared by eligible accounts in proportion to their
+# eligible value over the day. Blank until decided; closing an epoch refuses to run while blank.
+budget_per_day:
+  HUSDC:
+  HUSDT:
+
+# Hour of the day (UTC, 0-23) when each daily epoch starts. Blank until decided.
+epoch_start_hour_utc:
+
+earn_on_supply_of: [HUSDC, HUSDT]
+
+# An account with more HOLLAR debt than this (in dollars, added up over the main, GIGAHDX and
+# BIL markets) earns nothing for that hour; hours without the debt still count. 0 means any
+# HOLLAR debt disqualifies. 5 keeps leftover dust from disqualifying anyone.
+max_hollar_debt_usd: 5

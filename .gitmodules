@@ -1,0 +1,3 @@
+[submodule "contracts/lib/universal-rewards-distributor"]
+	path = contracts/lib/universal-rewards-distributor
+	url = https://github.com/morpho-org/universal-rewards-distributor
