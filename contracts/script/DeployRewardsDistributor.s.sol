@@ -11,9 +11,10 @@ import {UniversalRewardsDistributor} from "urd/UniversalRewardsDistributor.sol";
 ///                      block and adds the updater itself, and the deployer never holds a role)
 ///        URD_TIMELOCK  dispute window in seconds (default 12 hours, must be shorter than one day)
 ///        URD_DEPLOYER  the deployer's address, read by `check` only (optional)
-///      Run with `--sender <deployer>` and a matching signer (--private-key, --account or --ledger),
-///      plus `--legacy` as the money-market deploys do. The deployer must be on Hydration's
-///      EVM deployer whitelist (evmAccounts.addContractDeployer), or contract creation is rejected.
+///        PK_HYDRATION  the deployer's private key (optional; sh/migrate-distributor.sh sets it)
+///      Without PK_HYDRATION, run with `--sender <deployer>` and a matching signer (--account or
+///      --ledger). Pass `--legacy` as the money-market deploys do. The deployer must hold an
+///      EVMAccounts.ContractDeployer slot on Hydration, or contract creation is rejected.
 contract DeployRewardsDistributor is Script {
     uint256 public constant DEFAULT_TIMELOCK = 12 hours;
 
@@ -70,10 +71,22 @@ contract DeployRewardsDistributor is Script {
 
     function run() external returns (UniversalRewardsDistributor urd) {
         (address owner, address updater, uint256 timelock) = settings();
-        address deployer = msg.sender;
-        require(deployer != FOUNDRY_DEFAULT_SENDER, "pass --sender <deployer> with a matching signer");
-
-        vm.startBroadcast(deployer);
+        // The key comes from the environment, never from the command line, where other processes can
+        // read it. Without one, the signer is the hardware wallet or keystore given with --sender.
+        string memory rawKey = vm.envOr("PK_HYDRATION", string(""));
+        address deployer;
+        if (bytes(rawKey).length > 0) {
+            uint256 key = vm.parseUint(rawKey);
+            deployer = vm.addr(key);
+            vm.startBroadcast(key);
+        } else {
+            deployer = msg.sender;
+            require(
+                deployer != FOUNDRY_DEFAULT_SENDER,
+                "set PK_HYDRATION, or pass --sender <deployer> with a matching signer"
+            );
+            vm.startBroadcast(deployer);
+        }
         urd = deploy(owner, updater, timelock, deployer);
         vm.stopBroadcast();
 

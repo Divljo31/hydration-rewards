@@ -25,7 +25,8 @@ assets is not recorded. A different strategy is a code change, not a setting.
 | `src/eligibility.ts`, `src/allocate.ts`, `src/build-tree.ts`, `src/program.ts` | Who is eligible, the budget split, the cumulative tree in URD leaf format, and the program file reader. |
 | `src/lib/`, `src/types.ts` | RPC client, holder index, the snapshot block rule, addresses, file and number helpers; the shapes of the config, snapshots, programs and trees. |
 | `contracts/` | The URD (git submodule), the deploy script and Foundry tests against the real URD. |
-| `tools/` | Fixture generator and pin check, used by the tests and CI. |
+| `tools/` | Fixture generator and pin check, used by the tests and CI; the recorder and checker of a distributor deployment. |
+| `sh/`, `migrations/envs/`, `deployments/` | Deploying the distributor: the wrappers, the settings for each environment, and the record of what was deployed. |
 | `Dockerfile`, `docker/` | The runner's image and its Docker Swarm stack (see Running in Docker). |
 | `.claude/skills/reward-program/` | Claude skill: describe a change in plain words, get a previewed pull request. |
 
@@ -214,74 +215,81 @@ distributor's root while a root is waiting out the timelock or has not been post
 
 ## Deploying the distributor
 
+The deployment is scripted, the way the migrations in `whm` are: settings for each environment in
+`migrations/envs/<env>/distributor.env`, the deployer's key from `PK_HYDRATION` (in the shell or in
+`.env`, never on a command line), and a record of what was deployed in
+`deployments/<env>/distributor.json`. Rehearse on a local fork first:
+
 ```sh
-cd contracts
-URD_OWNER=<rewards multisig> URD_UPDATER= \
-forge script script/DeployRewardsDistributor.s.sol --rpc-url hydration --broadcast --legacy \
-  --sender <deployer> --private-key <key>      # or --account / --ledger
+npm run fork:hydration             # a local fork of Hydration's EVM (anvil); leave it running
+npm run migrate:distributor:fork   # deploy, record and check against the fork
 ```
 
-Without `URD_UPDATER` this is one transaction: the multisig owns the URD from its first block, the
-deployer never holds a role, and the multisig then adds the root-posting key with
-`setRootUpdater(<key>, true)`. That is the safer way. With `URD_UPDATER=<root-posting key>` the
-script does it in three transactions (create, add the updater, hand ownership to the multisig), and
-the deployer owns the URD in between: it could submit a root of its own, or make itself an updater,
-before the handover.
+Then, with the rewards multisig in `URD_OWNER` in `migrations/envs/prod/distributor.env`:
 
-Do not fund the URD until all three checks below pass. If one fails, leave that URD empty and deploy
-a new one; do not try to repair it.
+```sh
+PK_HYDRATION=<deployer key> npm run migrate:distributor
+```
 
-1. Check its state, with the same environment, the deployer's address and the address the script
-   printed:
+The deployer needs an `EVMAccounts.ContractDeployer` slot on Hydration. The migration checks that
+the URD is the pinned, unmodified commit, deploys it in one transaction with the multisig as owner
+(the deployer never holds a role), writes the record, and runs the checks below. It refuses to run
+again while a production record exists. The multisig then adds the root-posting key with
+`setRootUpdater(<key>, true)`, and the checks are run once more with that key:
 
-   ```sh
-   URD_OWNER=<rewards multisig> URD_UPDATER=<root-posting key, once added> URD_DEPLOYER=<deployer> \
-   forge script script/DeployRewardsDistributor.s.sol --rpc-url hydration --sig "check(address)" <URD>
-   ```
+```sh
+npm run verify:distributor -- <root-posting key>
+```
 
-   It fails if the code is not the pinned URD's byte for byte (a look-alike with a backdoor would
-   answer every getter the same), if the multisig is not the owner (the handover did not complete),
-   if a root is set or pending (a deployer that set the timelock to zero first can make its root
-   acceptable at once), or if the deployer is still an updater.
+`verify` needs no key and sends nothing. Do not fund the URD until it passes. If it fails, leave
+that URD empty and deploy a new one; do not try to repair it. It checks:
 
-2. Check that the URD's storage was written by the URD's own constructor: code with the right bytes
-   can still come from init code that wrote other storage first. The creation transaction the
-   deployer names (in `broadcast/`) must have no `to`, its receipt's `contractAddress` must be the
-   URD, and its input must be exactly the creation code followed by the constructor arguments (the
-   initial owner is the multisig, or the deployer in the three-transaction path):
+1. The state (`check(address)` in the deploy script): the code is the pinned URD's byte for byte (a
+   look-alike with a backdoor would answer every getter the same), the multisig is the owner (the
+   handover completed), the timelock is the one in the settings, no root is set or pending (a
+   deployer that set the timelock to zero first can make its root acceptable at once), the deployer
+   holds no role, and the root-posting key, when given, is an updater.
+2. The creation transaction (`tools/distributor-deployment.ts`): it creates the contract directly,
+   it was sent by the deployer, and its input is exactly the pinned URD's creation code followed by
+   the expected constructor arguments. Code with the right bytes can still come from init code that
+   wrote other storage first, and this rules that out.
 
-   ```sh
-   cast tx <creation tx> --rpc-url "$RPC_HYDRATION"                         # shows no `to`: a creation
-   cast receipt <creation tx> contractAddress --rpc-url "$RPC_HYDRATION"   # the URD's address
-   cast tx <creation tx> input --rpc-url "$RPC_HYDRATION" > deployed.hex
-   cast concat-hex \
-     "$(forge inspect lib/universal-rewards-distributor/src/UniversalRewardsDistributor.sol:UniversalRewardsDistributor bytecode)" \
-     "$(cast abi-encode 'f(address,uint256,bytes32,bytes32)' <initial owner> <timelock> "$(cast hash-zero)" "$(cast hash-zero)")" \
-     > expected.hex
-   diff deployed.hex expected.hex && echo "created by the pinned URD's constructor"
-   ```
+Hydration's blocks carry no `prevrandao`, and forge refuses to run a script against such a chain
+with the EVM version the URD is pinned to (`paris`). The scripts therefore pass
+`--evm-version london`, after checking on every run that the URD compiles to the same bytes either
+way. A `forge script` run by hand against Hydration needs the same flag.
 
-3. Three-transaction path only (in the single-transaction path the deployer never owned the URD):
-   list what the deployer did while it owned it. The script sends its three transactions back to
-   back, so the handover lands within minutes of the creation block, even with a hardware wallet that
-   asks to confirm each one; list the first 1,000 blocks (about 40 minutes, well within what the
-   public node answers):
+With a hardware wallet or a keystore instead of `PK_HYDRATION`, run the deploy script directly and
+then record and check it:
 
-   ```sh
-   cast logs --rpc-url "$RPC_HYDRATION" --address <URD> --from-block <creation block> \
-     --to-block <creation block + 1000> 'OwnerSet(address indexed newOwner)'
-   cast logs --rpc-url "$RPC_HYDRATION" --address <URD> --from-block <creation block> \
-     --to-block <creation block + 1000> 'RootUpdaterSet(address indexed rootUpdater, bool active)'
-   ```
+```sh
+cd contracts && set -a && source ../migrations/envs/prod/distributor.env && set +a
+forge script script/DeployRewardsDistributor.s.sol --rpc-url "$RPC_HYDRATION" --broadcast --legacy \
+  --evm-version london --sender <deployer> --ledger      # or --account <keystore>
+node ../tools/distributor-deployment.ts record prod && npm run verify:distributor
+```
 
-   The OwnerSet events must be the deployer at creation and then the multisig, and the only
-   RootUpdaterSet before that handover must add the root-posting key. A handover outside the range
-   fails the check too: the deployer owned the URD for longer than the script takes.
+With a root-posting key in `URD_UPDATER` in the settings, the script deploys in three transactions
+instead (create, add the updater, hand ownership to the multisig), and the deployer owns the URD in
+between: it could submit a root of its own, or make itself an updater, before the handover. Prefer
+the single transaction. After a three-transaction deployment, also list what the deployer did while
+it owned the URD. The script sends its three transactions back to back, so the handover lands
+within minutes of the creation block; list the first 1,000 blocks (about 40 minutes, well within
+what the public node answers):
 
-The deployer must be on Hydration's EVM deployer whitelist (`evmAccounts.addContractDeployer`,
-granted by governance). The script refuses a timelock of a day or more, because a new `submitRoot`
-replaces the pending root and restarts its clock, and it ends with the multisig as owner and the
-deployer holding no role.
+```sh
+cast logs --rpc-url "$RPC_HYDRATION" --address <URD> --from-block <creation block> \
+  --to-block <creation block + 1000> 'OwnerSet(address indexed newOwner)'
+cast logs --rpc-url "$RPC_HYDRATION" --address <URD> --from-block <creation block> \
+  --to-block <creation block + 1000> 'RootUpdaterSet(address indexed rootUpdater, bool active)'
+```
+
+The OwnerSet events must be the deployer at creation and then the multisig, and the only
+RootUpdaterSet before that handover must add the root-posting key. A handover outside the range
+fails the check too: the deployer owned the URD for longer than the script takes.
+
+The script refuses a timelock of a day or more, because a new `submitRoot` replaces the pending
+root and restarts its clock.
 
 ## What stops a run
 

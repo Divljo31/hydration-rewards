@@ -19,7 +19,12 @@
     "snapshot": "node src/snapshot.ts",
     "close-epoch": "node src/close-epoch.ts",
     "preview": "node src/preview.ts",
-    "bot": "node src/bot.ts"
+    "bot": "node src/bot.ts",
+    "fork:hydration": "bash sh/fork-hydration.sh",
+    "migrate:distributor": "bash sh/migrate-distributor.sh prod",
+    "migrate:distributor:fork": "bash sh/migrate-distributor.sh fork",
+    "verify:distributor": "bash sh/verify-distributor.sh prod",
+    "verify:distributor:fork": "bash sh/verify-distributor.sh fork"
   },
   "dependencies": {
     "@openzeppelin/merkle-tree": "1.0.8",

@@ -174,6 +174,24 @@ contract RewardsDistributorTest is Test {
         (, settingsUpdater, timelock) = script.settings();
         assertEq(settingsUpdater, address(0));
         assertEq(timelock, 12 hours);
+
+        // run() takes the deployer's key from PK_HYDRATION, as sh/migrate-distributor.sh passes it.
+        // (Here, with the other settings, because tests run in parallel and share the environment.)
+        (address deployer, uint256 key) = makeAddrAndKey("deployer");
+        vm.setEnv("PK_HYDRATION", vm.toString(bytes32(key)));
+        UniversalRewardsDistributor deployed = script.run();
+        assertEq(deployed.owner(), multisig);
+        assertEq(deployed.timelock(), 12 hours);
+        assertFalse(deployed.isUpdater(deployer));
+        // A key that is set but malformed stops the run instead of falling back to another signer.
+        vm.setEnv("PK_HYDRATION", "not a key");
+        vm.expectRevert();
+        script.run();
+        // Without a key and without --sender there is nobody to sign.
+        vm.setEnv("PK_HYDRATION", "");
+        vm.prank(0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38);
+        vm.expectRevert(bytes("set PK_HYDRATION, or pass --sender <deployer> with a matching signer"));
+        script.run();
     }
 
     // ---- root lifecycle ----

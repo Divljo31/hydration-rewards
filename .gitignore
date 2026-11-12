@@ -11,3 +11,6 @@ data/
 
 # Claude Code's local bookkeeping; the skill under .claude/skills is checked in.
 .claude/.cc-writes
+
+# Deployment rehearsals against a local fork (sh/migrate-distributor.sh fork)
+deployments/fork/
