@@ -1,0 +1,7 @@
+# Only what the runner needs goes into the build context: no data/, .env, tests or contracts.
+*
+!package.json
+!package-lock.json
+!src
+!config
+!programs

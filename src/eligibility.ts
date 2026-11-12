@@ -13,7 +13,9 @@
 import { compareAddresses, normalizeAddress } from "./lib/accounts.ts";
 import type { Denylist, PerAccount, Snapshot } from "./types.ts";
 
-export const SNAPSHOT_FORMAT = "hydration-rewards-snapshot/1";
+// /2: the block is picked inside the hour from the hash of the block after it, and recorded how
+// (src/lib/selection.ts). /1 snapshots, taken at the first block of the hour, are not read.
+export const SNAPSHOT_FORMAT = "hydration-rewards-snapshot/2";
 export const DEBT_ASSET = "HOLLAR";
 
 const toScale = (decimals: number): bigint => {
@@ -30,6 +32,7 @@ function amount(value: unknown, where: string): bigint {
 //   eligible:  Map<account, Map<asset, bigint>>   every account that is not excluded (zeros for borrowers)
 //   excluded:  Map<account, {reason, value}>      denylisted accounts and their supplied value
 //   borrowers: { accounts: Set, value }           accounts over the HOLLAR allowance and the value they lose
+//   debts:     Map<account, bigint>               HOLLAR debt of every account in `eligible`
 //   gross:     bigint                             supplied value of every account that is not excluded
 // }
 export interface EligibilityOptions {
@@ -50,7 +53,14 @@ type Excluded = Map<string, { reason: string; value: bigint }>;
 export function snapshotEligibility(
   snapshot: Snapshot,
   { maxHollarDebt, earn, denylist }: EligibilityOptions,
-): { eligible: PerAccount; excluded: Excluded; borrowers: Borrowers; gross: bigint; reserves: string[] } {
+): {
+  eligible: PerAccount;
+  excluded: Excluded;
+  borrowers: Borrowers;
+  debts: Map<string, bigint>;
+  gross: bigint;
+  reserves: string[];
+} {
   if (snapshot?.format !== SNAPSHOT_FORMAT) throw new Error(`not a ${SNAPSHOT_FORMAT} snapshot`);
   if (!denylist) throw new Error("a denylist is required");
   if (typeof maxHollarDebt !== "bigint" || maxHollarDebt < 0n) throw new Error("the allowed HOLLAR debt is required");
@@ -77,6 +87,7 @@ export function snapshotEligibility(
   const eligible: PerAccount = new Map();
   const excluded: Excluded = new Map();
   const borrowers: Borrowers = { accounts: new Set(), value: 0n };
+  const debts = new Map<string, bigint>();
   let gross = 0n;
 
   for (const [rawAccount, holdings] of Object.entries(snapshot.accounts ?? {})) {
@@ -106,6 +117,7 @@ export function snapshotEligibility(
         debtScale *
         m.price;
     }
+    debts.set(account, debt);
     if (debt > maxHollarDebt) {
       borrowers.accounts.add(account);
       borrowers.value += total;
@@ -114,7 +126,7 @@ export function snapshotEligibility(
       eligible.set(account, values);
     }
   }
-  return { eligible, excluded, borrowers, gross, reserves: reserves.map((r) => r.name) };
+  return { eligible, excluded, borrowers, debts, gross, reserves: reserves.map((r) => r.name) };
 }
 
 // Many snapshots -> time-weighted sums per account and asset, per-asset totals, and what the

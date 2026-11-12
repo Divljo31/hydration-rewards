@@ -19,6 +19,19 @@ contract MockPrime is ERC20("PRIME", "PRIME") {
     }
 }
 
+/// @dev The pinned URD with one function added: it answers every getter exactly as the real one does,
+/// and lets whoever deployed it take the balance.
+contract LookalikeURD is UniversalRewardsDistributor {
+    address internal immutable backdoor = msg.sender;
+
+    constructor(address owner, uint256 timelock) UniversalRewardsDistributor(owner, timelock, bytes32(0), bytes32(0)) {}
+
+    function sweep(ERC20 token) external {
+        require(msg.sender == backdoor);
+        token.transfer(backdoor, token.balanceOf(address(this)));
+    }
+}
+
 /// @notice The real URD at 3de504b against trees written by src/build-tree.ts (see tools/make-fixtures.ts).
 contract RewardsDistributorTest is Test {
     using stdJson for string;
@@ -102,6 +115,49 @@ contract RewardsDistributorTest is Test {
         script.check(address(unfinished));
         vm.expectRevert(bytes("no contract at that address"));
         script.check(makeAddr("nothing here"));
+
+        // The handover completed, but while it owned the URD the deployer set the timelock to zero,
+        // submitted a root of its own and put the timelock back: that root can be accepted at once.
+        UniversalRewardsDistributor planted =
+            new UniversalRewardsDistributor(address(this), TIMELOCK, bytes32(0), bytes32(0));
+        planted.setTimelock(0);
+        planted.submitRoot(keccak256("a tree nobody reviewed"), bytes32(0));
+        planted.setTimelock(TIMELOCK);
+        planted.setRootUpdater(updater, true);
+        planted.setOwner(multisig);
+        vm.expectRevert(bytes("a root is pending: do not fund it, deploy a new URD"));
+        script.check(address(planted));
+        // Too late to revoke: anyone accepts it first. The check then reports the root that is set.
+        planted.acceptRoot();
+        vm.expectRevert(bytes("a root is already set: do not fund it, deploy a new URD"));
+        script.check(address(planted));
+
+        // The handover completed, but the deployer made itself an updater first.
+        UniversalRewardsDistributor kept =
+            new UniversalRewardsDistributor(address(this), TIMELOCK, bytes32(0), bytes32(0));
+        kept.setRootUpdater(updater, true);
+        kept.setRootUpdater(address(this), true);
+        kept.setOwner(multisig);
+        script.check(address(kept)); // without URD_DEPLOYER there is no way to tell
+        vm.setEnv("URD_DEPLOYER", vm.toString(address(this)));
+        vm.expectRevert(bytes("the deployer is still an updater"));
+        script.check(address(kept));
+        script.check(address(urd)); // the script's own handover leaves the deployer nothing
+        vm.setEnv("URD_DEPLOYER", vm.toString(multisig));
+        vm.expectRevert(bytes("URD_DEPLOYER is the owner"));
+        script.check(address(urd));
+        vm.setEnv("URD_DEPLOYER", "");
+
+        // A look-alike answers every getter the way the URD does, with the multisig as owner and the
+        // root-posting key as the only updater, yet its deployer can take whatever it is funded with.
+        LookalikeURD lookalike = new LookalikeURD(multisig, TIMELOCK);
+        vm.prank(multisig);
+        lookalike.setRootUpdater(updater, true);
+        vm.expectRevert(bytes("not the pinned URD's code"));
+        script.check(address(lookalike));
+        prime.mint(address(lookalike), 1e6);
+        lookalike.sweep(prime);
+        assertEq(prime.balanceOf(address(lookalike)), 0);
 
         // A truncated address or a timelock with a unit must stop the run, not fall back to a default.
         vm.setEnv("URD_UPDATER", "0x1234abcd");

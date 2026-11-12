@@ -26,6 +26,7 @@ The program reader stops on anything it does not recognise, so inventing a setti
 an error. The whole strategy is fixed: accounts earn on their HUSDC and HUSDT supply unless they
 have borrowed HOLLAR. What can be changed is:
 
+- `applies_from_epoch` — the first daily epoch the settings pay (a UTC date); every change moves it
 - `budget_per_day` — PRIME per day for each earning asset
 - `epoch_start_hour_utc` — the hour each daily epoch starts
 - `earn_on_supply_of` — `HUSDC`, `HUSDT` or both
@@ -48,6 +49,12 @@ show them the preview's PRIME-per-$1,000 figures for one or two budgets they nam
 picking one yourself. Never blank or remove `max_hollar_debt_usd`; the reader refuses that.
 Once epochs are being closed, do not change `epoch_start_hour_utc`: each epoch must start where
 the previous one ended, so the next close would be refused. Say that it needs a developer.
+
+`applies_from_epoch` is theirs to decide too: ask from which day the change should apply. Every
+edit to the file, even a small one, needs a new `applies_from_epoch` on an epoch that has not been
+closed yet, normally the day after the pull request will be merged or later; otherwise closing
+the next epoch is refused. If they do not give a date, leave it blank and say that a developer
+will fill it in before merging. Put the date in the pull request's description.
 
 Two consequences are worth raising whenever they apply, because they are easy to miss:
 
@@ -78,9 +85,8 @@ Two consequences are worth raising whenever they apply, because they are easy to
    it, and stop there rather than guessing numbers.
 4. If the reader reports an error, fix the file and preview again. The messages name the bad setting.
 5. Explain the result and the difference from before in plain words, for example: "Of $3.78M
-   supplied, $1.44M would earn. 53 accounts with HOLLAR debt lose their rewards on $1.93M; the
-   Treasury and pallet accounts are excluded." Mention the denylist being provisional if the
-   preview says so.
+   supplied, $1.85M would earn. 53 accounts with HOLLAR debt lose their rewards on $1.93M."
+   Nobody is excluded today; mention excluded accounts only if the preview shows any.
 6. Ask before publishing anything. Once they agree, create a branch named `program/<short-name>`,
    commit only the program file with a message like `programs: allow up to $10 of HOLLAR debt`,
    push, and open a pull request with `gh pr create`. The description should say what changes for
@@ -93,8 +99,10 @@ Two consequences are worth raising whenever they apply, because they are easy to
 than five dollars."
 
 ```yaml
+applies_from_epoch: 2027-02-03     # the day they asked for, or blank for the developer to fill
 max_hollar_debt_usd: 10
 ```
 
-Change that one line, preview before and after, explain how many more accounts earn and what it
-does to everyone else's rate, and point out if the budget and start hour are still blank.
+Change the allowance, ask from which day it should apply and set `applies_from_epoch`, preview
+before and after, explain how many more accounts earn and what it does to everyone else's rate, and
+point out if the budget and start hour are still blank.

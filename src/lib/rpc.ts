@@ -18,6 +18,16 @@ export class RpcError extends Error {
   }
 }
 
+// How errors name the node: its host and nothing else. Archive providers often put an API key in the
+// URL's path or query, and errors end up in logs and in the runner's status file.
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host || "the RPC node";
+  } catch {
+    return "the RPC node";
+  }
+}
+
 export function makeRpc(
   url: string,
   {
@@ -28,6 +38,7 @@ export function makeRpc(
   }: { batchSize?: number; timeoutMs?: number; retries?: number; retryDelayMs?: number } = {},
 ): Rpc & { url: string } {
   let nextId = 1;
+  const where = hostOf(url);
 
   // The body of the response, unchecked: `call` and `batch` look at every field they use.
   async function post(body: unknown): Promise<any> {
@@ -44,10 +55,9 @@ export function makeRpc(
       } catch (error) {
         if (attempt >= retries) {
           const failure = error as { cause?: { code?: string }; message?: string };
-          throw new Error(
-            `${url} unreachable after ${retries + 1} attempts: ${failure.cause?.code ?? failure.message}`,
-            { cause: error },
-          );
+          const reason = String(failure.cause?.code ?? failure.message);
+          const shown = url ? reason.split(url).join(where) : reason;
+          throw new Error(`${where} unreachable after ${retries + 1} attempts: ${shown}`);
         }
         await sleep(retryDelayMs * 2 ** attempt);
       }

@@ -1,4 +1,5 @@
-// Accounts that earn nothing: Treasury, pallet pots, ICE pot, stableswap pool accounts.
+// Accounts that earn nothing. The shipped config/denylist.json excludes nobody: its rule is off and
+// it lists no address.
 //
 // config/denylist.json:
 //   rules.palletAccounts  deny every address that starts with "modl" (Substrate pallet accounts and

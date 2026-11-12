@@ -1,14 +1,16 @@
 # The rewards program file
 
 The program file says who earns PRIME and how much. You can change it without touching code:
-edit the file in this folder, run the preview, and open a pull request. A developer reviews it
-and runs it from the next epoch. Every epoch's summary records the exact file it used, so any
-payout can be traced back to the settings that produced it.
+edit the file in this folder, run the preview, and open a pull request. A developer reviews it,
+and it takes effect at the epoch it names in `applies_from_epoch`. Every epoch's summary records
+the exact file it used, so any payout can be traced back to the settings that produced it.
 
 ## The settings
 
 ```yaml
 name: HUSDC and HUSDT, no HOLLAR borrowers    # any description
+
+applies_from_epoch: 2027-01-15                # the first daily epoch these settings pay
 
 budget_per_day:                               # PRIME per day, one line per earning asset
   HUSDC: 275.616                              # plain numbers, up to 6 decimal places
@@ -21,8 +23,15 @@ earn_on_supply_of: [HUSDC, HUSDT]             # whose supply earns
 max_hollar_debt_usd: 5                        # more HOLLAR debt than this: nothing for that hour
 ```
 
-Leave `budget_per_day` values or `epoch_start_hour_utc` blank while they are undecided. The
-preview still works; closing an epoch refuses to run until they are filled in.
+Leave `applies_from_epoch`, `budget_per_day` values or `epoch_start_hour_utc` blank while they
+are undecided. The preview still works; closing an epoch refuses to run until they are filled in.
+
+`applies_from_epoch` is the date of the first daily epoch the file pays; that epoch starts at
+`epoch_start_hour_utc` on that date. Every change to the file, even a small one, moves it to an
+epoch that has not been closed yet, normally the day after the pull request is merged or later.
+Closing an earlier epoch with the file is refused, and so is closing a later one when the file
+changed without moving the date. That way a change takes effect exactly where the reviewed file
+says, whenever the job picks it up.
 
 Once the first epoch has been closed, `epoch_start_hour_utc` is no longer a simple edit: every
 epoch has to start where the one before ended, so a different hour is refused. Changing it needs
@@ -46,12 +55,13 @@ Each asset's daily budget is shared between eligible accounts in proportion to t
 value over the day. With a fixed budget, the fewer accounts are eligible, the more each one earns
 per dollar.
 
-Accounts that never earn (the Treasury and pallet accounts) are listed in `config/denylist.json`,
-which a developer maintains.
+No account is excluded by name: the Treasury and pallet accounts are treated like any other holder of
+supplied HUSDC or HUSDT, and the HOLLAR rule applies to them too.
+`config/denylist.json`, which a developer maintains, can exclude accounts, and it is empty.
 
-What you can change here is the budget, the start hour, which of HUSDC and HUSDT earn, and the
-HOLLAR allowance. Anything else — other assets, other kinds of debt, a different rule — needs a
-developer.
+What you can change here is the budget, the start hour, which of HUSDC and HUSDT earn, the
+HOLLAR allowance, and the epoch a change starts from. Anything else — other assets, other kinds of
+debt, a different rule — needs a developer.
 
 ## Checking the effect
 

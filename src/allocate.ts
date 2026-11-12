@@ -2,8 +2,10 @@
 //
 // reward_a = floor( Σ_r budget_r × e_{a,r} / E_r )
 // computed over one common denominator, so each account is rounded down once and the dust is
-// smaller than the number of paid accounts. A reserve nobody is eligible for is left undistributed
-// and reported; what happens to that budget is a decision for the operators.
+// smaller than the number of earning accounts (those with any eligible value, including the ones
+// whose share rounds down to nothing). Paid accounts are those that receive at least one unit.
+// A reserve nobody is eligible for is left undistributed and reported; what happens to that budget
+// is a decision for the operators.
 
 import type { PerAccount } from "./types.ts";
 
@@ -46,7 +48,7 @@ export function allocate({
   );
 
   const amounts = new Map<string, bigint>();
-  let paidAccounts = 0n;
+  let earningAccounts = 0n;
   let distributed = 0n;
   for (const [account, perReserve] of eligible) {
     let numerator = 0n;
@@ -55,17 +57,17 @@ export function allocate({
     }
     if (numerator === 0n) continue;
     const reward = numerator / denominator;
-    paidAccounts += 1n;
+    earningAccounts += 1n;
     distributed += reward;
     if (reward > 0n) amounts.set(account, reward);
   }
 
   const liveBudget = live.reduce((acc, name) => acc + need(budgets, name), 0n);
   const dust = liveBudget - distributed;
-  if (dust < 0n || (paidAccounts > 0n ? dust >= paidAccounts : dust !== liveBudget)) {
+  if (dust < 0n || (earningAccounts > 0n ? dust >= earningAccounts : dust !== liveBudget)) {
     throw new Error(
-      `allocation out of bounds: budget ${liveBudget}, distributed ${distributed}, accounts ${paidAccounts}`,
+      `allocation out of bounds: budget ${liveBudget}, distributed ${distributed}, accounts ${earningAccounts}`,
     );
   }
-  return { amounts, distributed, dust, undistributed, paidAccounts };
+  return { amounts, distributed, dust, undistributed, earningAccounts, paidAccounts: amounts.size };
 }

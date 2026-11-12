@@ -6,6 +6,12 @@
 
 name: HUSDC and HUSDT, no HOLLAR borrowers
 
+# The first daily epoch these settings pay, as the UTC date it starts on (like 2027-01-15). Every
+# change to this file moves it to an epoch that has not been closed yet: closing an earlier epoch
+# with this file is refused, and so is a later one if the file changed without moving it. Blank
+# until decided.
+applies_from_epoch:
+
 # PRIME per day for each earning asset, shared by eligible accounts in proportion to their
 # eligible value over the day. Blank until decided; closing an epoch refuses to run while blank.
 budget_per_day:

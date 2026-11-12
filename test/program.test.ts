@@ -16,6 +16,7 @@ const { start } = epochWindow("2026-11-12", 14);
 
 const SETTINGS = {
   name: "name: test",
+  applies_from_epoch: "applies_from_epoch: 2026-11-12",
   budget_per_day: "budget_per_day:\n  HUSDC: 1\n  HUSDT: 1",
   epoch_start_hour_utc: "epoch_start_hour_utc: 14",
   earn_on_supply_of: "earn_on_supply_of: [HUSDC, HUSDT]",
@@ -27,15 +28,40 @@ const program = (changes = {}) =>
     .filter((line) => line !== null)
     .join("\n");
 
-test("every shipped program file loads, and refuses to close an epoch while decisions are blank", () => {
+// Checks how each shipped file behaves, never what it holds: a program pull request changes the values.
+test("every shipped program file loads, and closes an epoch only once every decision is filled in", () => {
   const files = readdirSync(join(root, "programs")).filter((f) => f.endsWith(".yaml"));
-  assert.deepEqual(files, ["htoken-no-hollar-borrowers.yaml"]);
+  assert.ok(files.length > 0);
   for (const file of files) {
-    const p = loadProgram(join(root, "programs", file), config);
-    assert.equal(p.budgetPerDay.get("HUSDC"), null);
-    assert.equal(p.startHourUtc, null);
-    assert.equal(p.maxHollarDebt, $(5));
-    assert.throws(() => loadProgram(join(root, "programs", file), config, { requireDecisions: true }), /blank/);
+    const path = join(root, "programs", file);
+    const p = loadProgram(path, config); // the preview reads it whatever is still blank
+    const undecided =
+      [...p.budgetPerDay.values()].some((budget) => budget === null) ||
+      p.startHourUtc === null ||
+      p.appliesFromEpoch === null;
+    if (undecided) {
+      assert.throws(() => loadProgram(path, config, { requireDecisions: true }), /is blank/, file);
+    } else {
+      assert.doesNotThrow(() => loadProgram(path, config, { requireDecisions: true }), file);
+    }
+  }
+});
+
+test("the first epoch a program file pays is a decision: a real date, and required to close an epoch", () => {
+  assert.equal(parseProgram(program(), config, { requireDecisions: true }).appliesFromEpoch, "2026-11-12");
+  for (const line of ["applies_from_epoch:", null]) {
+    // Left blank or left out, it previews, and stops a close.
+    assert.equal(parseProgram(program({ applies_from_epoch: line }), config).appliesFromEpoch, null);
+    assert.throws(
+      () => parseProgram(program({ applies_from_epoch: line }), config, { requireDecisions: true }),
+      /applies_from_epoch is blank; write the first epoch this file pays/,
+    );
+  }
+  for (const value of ["2026-11-31", "12 Nov 2026", "2026-11-1", "tomorrow"]) {
+    assert.throws(
+      () => parseProgram(program({ applies_from_epoch: `applies_from_epoch: ${value}` }), config),
+      /applies_from_epoch must be a date like 2027-01-15/,
+    );
   }
 });
 
@@ -137,5 +163,14 @@ test("the preview reports eligible value and what the HOLLAR rule removed", () =
   assert.equal(perAccount.find((r) => r.account === ACCOUNTS.b)?.rewardPerDay, 1);
 
   const blank = parseProgram(program({ budget_per_day: "budget_per_day:\n  HUSDC:\n  HUSDT:" }), config);
-  assert.match(previewProgram(blank, snapshots, { denylist, reward: config.reward }).text, /budget_per_day is blank/);
+  assert.match(
+    previewProgram(blank, snapshots, { denylist, reward: config.reward }).text,
+    /budget_per_day is blank for HUSDC and HUSDT, so no amounts are shown/,
+  );
+  // One budget filled in is still not enough to show amounts, and the message names the one left.
+  const half = parseProgram(program({ budget_per_day: "budget_per_day:\n  HUSDC: 1\n  HUSDT:" }), config);
+  assert.match(
+    previewProgram(half, snapshots, { denylist, reward: config.reward }).text,
+    /budget_per_day is blank for HUSDT, so no amounts are shown/,
+  );
 });

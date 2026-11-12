@@ -1,8 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decodeAddress, decodeReserveData, decodeUint, ethCall, SELECTORS } from "../src/lib/abi.ts";
-import { blockAtOrAfter, snapshotHour } from "../src/snapshot.ts";
+import { checkSelection } from "../src/lib/selection.ts";
+import { blockAtOrAfter, checkChainId, parseTime, snapshotBlock, snapshotHour } from "../src/snapshot.ts";
 import type { Config } from "../src/types.ts";
+
+const CHAIN_ID = "0x3640e"; // 222222, Hydration
 
 test("calls are encoded with the selector and a padded address", () => {
   const call = ethCall("0xToken", SELECTORS.balanceOf, ["0x00000000000000000000000000000000000A11CE"], 16843184);
@@ -54,7 +57,7 @@ function chain({ finalized, latest }: { finalized: number; latest: number }) {
   };
 }
 
-test("the snapshot block is the first one at or after the hour", async () => {
+test("the first block at or after a time is found by its timestamp", async () => {
   const rpc = chain({ finalized: 500, latest: 520 });
   assert.deepEqual(await blockAtOrAfter(rpc, 1000 + 6 * 100), {
     number: 100,
@@ -72,16 +75,37 @@ test("a snapshot waits for the block to be finalized", async () => {
   assert.ok(!rpc.asked.includes("latest"));
 });
 
+test("the snapshot block is one of the hour's own, picked by the hash of the first block after the hour", async () => {
+  // The hour from t=3600: blocks 434 (t=3604) to 1033 fall inside it, block 1034 (t=7204) is the first
+  // after it. That block's hash, 1034 in this chain, picks index 1034 mod 600 = 434: block 868.
+  const { block, selection } = await snapshotBlock(chain({ finalized: 1_100, latest: 1_200 }), 3600, 3600);
+  assert.deepEqual(selection, {
+    firstBlock: 434,
+    blocks: 600,
+    seed: { number: 1_034, hash: `0x${(1_034).toString(16).padStart(64, "0")}` },
+    index: 434,
+  });
+  assert.equal(block.number, 868);
+  assert.ok(block.timestamp >= 3600 && block.timestamp < 7200);
+  assert.doesNotThrow(() => checkSelection(selection, block.number, "picked")); // what the closer checks
+
+  // Until the block after the hour is finalized, the hour cannot be taken: nobody knows its hash yet.
+  await assert.rejects(snapshotBlock(chain({ finalized: 1_000, latest: 1_200 }), 3600, 3600), (error: any) => {
+    return error.code === "NOT_FINALIZED" && /at or after 7200/.test(error.message);
+  });
+});
+
 test("an hour with no block in it is refused, not stored under that hour", async () => {
   // Blocks every 6 seconds from t=1000, so with one-hour slots from t=0 the first block at or
   // after 3600 is inside its hour, but a "chain" whose blocks are 2 hours apart has none.
-  // Only the epoch settings are read before the block is checked.
-  const config = { epoch: { snapshotsPerEpoch: 24 } } as Config;
+  // Only the epoch settings and the chain id are read before the block is checked.
+  const config = { chainId: 222222, epoch: { snapshotsPerEpoch: 24 } } as Config;
   const stalled = {
     async batch(): Promise<unknown[]> {
       throw new Error("not reached: the hour is refused before any balance is read");
     },
-    async call(_method: string, params: unknown[]) {
+    async call(method: string, params: unknown[]) {
+      if (method === "eth_chainId") return CHAIN_ID;
       const tag = String(params[0]);
       const n = tag === "finalized" ? 5 : Number(BigInt(tag));
       return { number: `0x${n.toString(16)}`, hash: "0x00", timestamp: `0x${(n * 7200 + 60).toString(16)}` };
@@ -93,4 +117,32 @@ test("an hour with no block in it is refused, not stored under that hour", async
     (error: any) => error.code === "NO_BLOCK_IN_HOUR" && /no block between 3600 and 7200/.test(error.message),
   );
   await assert.rejects(snapshotHour({ rpc: stalled, config, dataDir: "/nonexistent", target: 3601 }), /on the hour/);
+});
+
+test("a node that serves another chain is refused before anything is read", async () => {
+  const config = { chainId: 222222, epoch: { snapshotsPerEpoch: 24 } } as Config;
+  const other = {
+    async batch(): Promise<unknown[]> {
+      throw new Error("not reached");
+    },
+    async call(method: string) {
+      if (method === "eth_chainId") return "0x1";
+      throw new Error(`not reached: ${method} before the chain id is checked`);
+    },
+  };
+  await assert.rejects(
+    snapshotHour({ rpc: other, config, dataDir: "/nonexistent", target: 3600 }),
+    /serves chain 1, but the config is for chain 222222/,
+  );
+  await assert.rejects(checkChainId({ call: async () => 42 }, config), /serves chain 42/);
+  await assert.doesNotReject(checkChainId({ call: async () => CHAIN_ID }, config));
+});
+
+test("--at needs its time zone, so a snapshot is never quietly of another hour", () => {
+  assert.equal(parseTime("1800021600"), 1_800_021_600); // 15 Jan 2027 14:00 UTC
+  assert.equal(parseTime("2027-01-15T14:00:00Z"), 1_800_021_600);
+  assert.equal(parseTime("2027-01-15T15:00:00+01:00"), 1_800_021_600);
+  // Read in this machine's zone, this would be 14:00 UTC in Belgrade and 09:30 UTC in Kolkata.
+  assert.throws(() => parseTime("2027-01-15T15:00:00"), /unix seconds or a time with its zone/);
+  assert.throws(() => parseTime("2027-01-15"), /unix seconds or a time with its zone/);
 });

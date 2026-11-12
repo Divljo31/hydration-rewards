@@ -85,6 +85,40 @@ test("transport failures are retried, then reported", async (t) => {
 
   t.mock.restoreAll();
   const failing = stubFetch(t, () => ({ status: 503 }));
-  await assert.rejects(rpc({ retries: 2 }).call("eth_chainId", []), /unreachable after 3 attempts: HTTP 503/);
+  await assert.rejects(
+    rpc({ retries: 2 }).call("eth_chainId", []),
+    /node\.test unreachable after 3 attempts: HTTP 503/,
+  );
   assert.equal(failing.length, 3);
+});
+
+test("errors name the node by its host, never by a URL that can carry an API key", async (t) => {
+  // Errors reach the runner's log and status file, so a key in the URL's path or query would leak.
+  const url = "https://archive.example:8443/v1/SECRET-PATH-KEY?apikey=SECRET-QUERY-KEY";
+  const keyless = (error: unknown) =>
+    error instanceof Error && !/SECRET/.test(error.message) && !/SECRET/.test(String(error.cause));
+
+  stubFetch(t, () => new Error(`request to ${url} failed, reason: connect ECONNREFUSED`));
+  await assert.rejects(
+    makeRpc(url, { retries: 1, retryDelayMs: 0 }).call("eth_chainId", []),
+    (error) =>
+      keyless(error) &&
+      /^archive\.example:8443 unreachable after 2 attempts: request to archive/.test(String((error as Error).message)),
+  );
+
+  t.mock.restoreAll();
+  stubFetch(t, () => ({ status: 401 }));
+  await assert.rejects(
+    makeRpc(url, { retries: 0, retryDelayMs: 0 }).batch([{ method: "eth_chainId", params: [] }]),
+    (error) =>
+      keyless(error) && (error as Error).message === "archive.example:8443 unreachable after 1 attempts: HTTP 401",
+  );
+});
+
+test("a blank URL still gives a readable error", async (t) => {
+  stubFetch(t, () => new Error("Failed to parse URL from "));
+  await assert.rejects(
+    makeRpc("", { retries: 0, retryDelayMs: 0 }).call("eth_chainId", []),
+    (error) => (error as Error).message === "the RPC node unreachable after 1 attempts: Failed to parse URL from ",
+  );
 });

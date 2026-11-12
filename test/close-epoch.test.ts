@@ -1,14 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { closeEpoch, epochWindow, writeOutputs } from "../src/close-epoch.ts";
+import { fileURLToPath } from "node:url";
+import { closeEpoch, closeEpochToDisk, epochWindow, writeOutputs } from "../src/close-epoch.ts";
 import type { CloseEpochInput } from "../src/close-epoch.ts";
-import type { Tree } from "../src/types.ts";
+import type { Config, Tree } from "../src/types.ts";
 import { allocate } from "../src/allocate.ts";
-import { toJson } from "../src/lib/io.ts";
-import { $, ACCOUNTS, hourly, makeDataDir, makeSnapshot, parseCsv } from "./helpers.ts";
+import { loadDenylist } from "../src/lib/denylist.ts";
+import { toJson, writeText } from "../src/lib/io.ts";
+import { parseProgram } from "../src/program.ts";
+import { $, ACCOUNTS, hashOf, hourly, makeDataDir, makeSnapshot, parseCsv } from "./helpers.ts";
 
 const PRIME = "0x000000000000000000000000000000010000002b";
 const EPOCH = "2026-11-12";
@@ -18,6 +21,9 @@ const BUDGETS = new Map([
   ["HUSDC", 1_000_000n],
   ["HUSDT", 1_000_000n],
 ]);
+const config = JSON.parse(
+  readFileSync(join(fileURLToPath(new URL("..", import.meta.url)), "config", "mainnet.json"), "utf8"),
+) as Config;
 
 function close(dataDir: string, denylistPath: string, overrides: Partial<CloseEpochInput> = {}) {
   return closeEpoch({
@@ -27,10 +33,17 @@ function close(dataDir: string, denylistPath: string, overrides: Partial<CloseEp
     budgets: BUDGETS,
     maxHollarDebt: $(5),
     reward: PRIME,
-    denylistPath,
+    denylist: loadDenylist(denylistPath),
     genesis: true,
     ...overrides,
   });
+}
+
+// Stores a tree where the runner keeps it, which is where a close looks for the chain it extends.
+function storeTree(dataDir: string, tree: Tree): string {
+  const path = join(dataDir, "trees", `${tree.epoch}.json`);
+  writeText(path, toJson(tree));
+  return path;
 }
 
 test("the epoch window starts at the given UTC hour and has no default", () => {
@@ -105,11 +118,29 @@ test("the CSV sums to the budget minus dust smaller than the number of accounts"
     ["HUSDT", 275_615_999n],
   ]);
   const { csv, summary } = close(dataDir, denylistPath, { budgets });
-  const total = [...parseCsv(csv).values()].reduce((x, y) => x + y, 0n);
+  const paid = parseCsv(csv);
+  const total = [...paid.values()].reduce((x, y) => x + y, 0n);
   const dust = 275_616_001n + 275_615_999n - total;
   assert.equal(String(total), summary.distributed);
   assert.equal(String(dust), summary.dust);
-  assert.ok(dust >= 0n && dust < BigInt(summary.paidAccounts), `dust ${dust} vs ${summary.paidAccounts} accounts`);
+  // Every account with eligible value loses less than one unit, including one whose share rounds to nothing.
+  assert.ok(
+    dust >= 0n && dust < BigInt(summary.earningAccounts),
+    `dust ${dust} vs ${summary.earningAccounts} accounts`,
+  );
+  assert.equal(summary.paidAccounts, paid.size);
+  assert.equal(summary.paidAccounts, summary.csv.rows);
+});
+
+test("an account whose share rounds down to nothing is earning but not paid", () => {
+  // a holds a billion times b's balance, and the budget is one unit short of paying b anything.
+  const { dataDir, denylistPath } = makeDataDir({
+    snapshots: hourly(start, () => ({ [ACCOUNTS.a]: { husdt: 1_000_000_000 }, [ACCOUNTS.b]: { husdt: 1 } })),
+  });
+  const { csv, summary } = close(dataDir, denylistPath, { budgets: new Map([...BUDGETS, ["HUSDT", 1_000n]]) });
+  assert.deepEqual([...parseCsv(csv).keys()], [ACCOUNTS.a]);
+  assert.equal(summary.paidAccounts, 1);
+  assert.equal(summary.earningAccounts, 2);
 });
 
 test("no denylisted account appears in the CSV", () => {
@@ -213,11 +244,8 @@ test("each epoch builds on the tree of the day before; skipping a day is refused
       into: dataDir,
     }));
   }
-  const treePath = (epoch: string, tree: Tree) => {
-    const path = join(dataDir, `tree-${epoch}.json`);
-    writeFileSync(path, toJson(tree)); // closeEpoch reads the previous tree from disk, as the CLI does
-    return path;
-  };
+  // closeEpoch reads the previous tree from disk, as the CLI does, and checks it is the stored one.
+  const treePath = (_epoch: string, tree: Tree) => storeTree(dataDir, tree);
 
   const e12 = close(dataDir, denylistPath);
   assert.throws(() => close(dataDir, denylistPath, { genesis: false }), /previous tree is required/);
@@ -291,8 +319,7 @@ test("changing the start hour between epochs is refused, because hours would be 
   const first = makeDataDir({ snapshots: hourly(start, holdings) });
   const e12 = close(first.dataDir, first.denylistPath);
   assert.deepEqual(e12.tree.window, { start, end: start + 86_400 });
-  const prev = join(first.dataDir, "tree-2026-11-12.json");
-  writeFileSync(prev, toJson(e12.tree));
+  const prev = storeTree(first.dataDir, e12.tree);
 
   // The next day closed with start hour 10 instead of 14: its window begins four hours early.
   const early = epochWindow("2026-11-13", 10).start;
@@ -308,4 +335,293 @@ test("changing the start hour between epochs is refused, because hours would be 
     /must follow each other without a gap or an overlap/,
   );
   assert.throws(() => epochWindow("2026-11-31", 14), /must be a date like/);
+});
+
+test("a snapshot must be at the block its hour's seed block picks", () => {
+  const holdings = () => ({ [ACCOUNTS.a]: { husdt: 10 } });
+
+  // Two candidate blocks in hour 3; the seed hash is odd, so it picks the second, which the snapshot is at.
+  const picked = hourly(start, holdings);
+  const n = picked[3].block.number;
+  picked[3].selection = { firstBlock: n - 1, blocks: 2, seed: { number: n + 1, hash: hashOf(3) }, index: 1 };
+  const ok = makeDataDir({ snapshots: picked });
+  assert.doesNotThrow(() => close(ok.dataDir, ok.denylistPath));
+
+  // The same snapshot claiming the second block while the seed hash is even, which picks the first.
+  const wrong = hourly(start, holdings);
+  wrong[3].selection = { firstBlock: n - 1, blocks: 2, seed: { number: n + 1, hash: hashOf(4) }, index: 1 };
+  const w = makeDataDir({ snapshots: wrong });
+  assert.throws(() => close(w.dataDir, w.denylistPath), /its block is not the one its hour's seed block picks/);
+
+  // A snapshot that records no selection, such as one taken at the first block of its hour.
+  const unrecorded = hourly(start, holdings);
+  delete (unrecorded[3] as { selection?: unknown }).selection;
+  const u = makeDataDir({ snapshots: unrecorded });
+  assert.throws(() => close(u.dataDir, u.denylistPath), /its block is not the one its hour's seed block picks/);
+
+  // The index the seed picks, but recorded for another block than the snapshot is at.
+  const elsewhere = hourly(start, holdings);
+  elsewhere[3].selection = { firstBlock: n - 1, blocks: 2, seed: { number: n + 1, hash: hashOf(4) }, index: 0 };
+  const e = makeDataDir({ snapshots: elsewhere });
+  assert.throws(() => close(e.dataDir, e.denylistPath), /its block is not the one its hour's seed block picks/);
+
+  // A seed that is not the first block after the hour's blocks.
+  const laterSeed = hourly(start, holdings);
+  laterSeed[3].selection = { firstBlock: n - 1, blocks: 2, seed: { number: n + 5, hash: hashOf(3) }, index: 1 };
+  const s = makeDataDir({ snapshots: laterSeed });
+  assert.throws(() => close(s.dataDir, s.denylistPath), /its block is not the one its hour's seed block picks/);
+});
+
+// Four days of snapshots, and program files that differ in the HUSDT budget and the first epoch they pay.
+function threeDays() {
+  const dataDir = mkdtempSync(join(tmpdir(), "hydration-rewards-"));
+  let denylistPath = "";
+  for (const [k, epoch] of ["2026-11-12", "2026-11-13", "2026-11-14", "2026-11-15"].entries()) {
+    const s = epochWindow(epoch, START_HOUR).start;
+    ({ denylistPath } = makeDataDir({
+      snapshots: hourly(s, () => ({ [ACCOUNTS.a]: { husdt: 10 } }), (k + 1) * 1_000),
+      into: dataDir,
+    }));
+  }
+  const programText = (husdt: number, from: string) =>
+    `name: t\napplies_from_epoch: ${from}\nbudget_per_day:\n  HUSDC: 1\n  HUSDT: ${husdt}\n` +
+    "epoch_start_hour_utc: 14\nearn_on_supply_of: [HUSDC, HUSDT]\nmax_hollar_debt_usd: 5\n";
+  const denylist = loadDenylist(denylistPath);
+  const toDisk = (
+    epoch: string,
+    husdt: number,
+    extra: Partial<Parameters<typeof closeEpochToDisk>[0]> = {},
+    from = "2026-11-12",
+  ) =>
+    closeEpochToDisk({
+      dataDir,
+      epoch,
+      program: parseProgram(programText(husdt, from), config, { requireDecisions: true }),
+      config,
+      denylist,
+      genesis: epoch === "2026-11-12",
+      previousTreePath:
+        epoch === "2026-11-12" ? null : join(dataDir, "trees", `${epoch.slice(0, 8)}${+epoch.slice(8) - 1}.json`),
+      ...extra,
+    });
+  const stored = (epoch: string) => readFileSync(join(dataDir, "trees", `${epoch}.json`), "utf8");
+  return { dataDir, denylistPath, toDisk, stored };
+}
+
+test("a hand close cannot leave a closed day out of the chain with --genesis or --allow-gap", () => {
+  const { dataDir, toDisk } = threeDays();
+  toDisk("2026-11-12", 1);
+  toDisk("2026-11-13", 1);
+  assert.throws(
+    () => toDisk("2026-11-14", 1, { genesis: true, previousTreePath: null }),
+    /2026-11-13 is already closed, so 2026-11-14 cannot start a new chain \(--genesis\)/,
+  );
+  assert.throws(
+    () => toDisk("2026-11-14", 1, { previousTreePath: join(dataDir, "trees", "2026-11-12.json"), allowGap: true }),
+    /2026-11-14 would build on 2026-11-12, but 2026-11-13 is closed after it, .*; --allow-gap is only for days that have no tree/,
+  );
+  assert.equal(existsSync(join(dataDir, "trees", "2026-11-14.json")), false);
+  assert.doesNotThrow(() => toDisk("2026-11-14", 1));
+});
+
+test("the claims file is written first and the tree last, so a close cut off between them is simply done again", () => {
+  const { dataDir, toDisk } = threeDays();
+  // The claims file cannot be written: public/trees is a file where a folder should be.
+  mkdirSync(join(dataDir, "public"), { recursive: true });
+  writeFileSync(join(dataDir, "public", "trees"), "in the way");
+  assert.throws(() => toDisk("2026-11-12", 1));
+  assert.equal(existsSync(join(dataDir, "trees", "2026-11-12.json")), false, "the epoch does not look closed");
+  assert.equal(existsSync(join(dataDir, "epochs", "2026-11-12.summary.json")), false, "nothing was left behind");
+
+  rmSync(join(dataDir, "public", "trees"));
+  const { tree } = toDisk("2026-11-12", 1);
+  assert.ok(existsSync(join(dataDir, "public", "trees", `${tree.root}.json`)));
+  assert.ok(existsSync(join(dataDir, "trees", "2026-11-12.json")));
+});
+
+test("a file that took over too late: the remedy the refusal gives works", () => {
+  const { dataDir, toDisk } = threeDays();
+  // The old file closed 2026-11-12 to 2026-11-14; the new one, which doubles HUSDT, applies from 2026-11-13.
+  for (const epoch of ["2026-11-12", "2026-11-13", "2026-11-14"]) toDisk(epoch, 1);
+  assert.throws(
+    () => toDisk("2026-11-15", 2, {}, "2026-11-13"),
+    /epoch 2026-11-14 was closed with another program file .* move the outputs of 2026-11-13 and of every later epoch \(data\/trees and data\/epochs\) aside and close them again in order with this file; otherwise set applies_from_epoch to 2026-11-15/,
+  );
+
+  // No root from 2026-11-13 on was posted: move those outputs aside and close them again in order.
+  const aside = mkdtempSync(join(tmpdir(), "hydration-aside-"));
+  for (const epoch of ["2026-11-13", "2026-11-14"]) {
+    for (const [dir, file] of [
+      ["trees", `${epoch}.json`],
+      ["epochs", `${epoch}.csv`],
+      ["epochs", `${epoch}.summary.json`],
+    ]) {
+      renameSync(join(dataDir, dir, file), join(aside, `${dir}-${file}`));
+    }
+  }
+  for (const epoch of ["2026-11-13", "2026-11-14", "2026-11-15"]) toDisk(epoch, 2, {}, "2026-11-13");
+  const tree15 = JSON.parse(readFileSync(join(dataDir, "trees", "2026-11-15.json"), "utf8")) as Tree;
+  assert.equal(tree15.claims[ACCOUNTS.a].claimable, String(1_000_000 + 3 * 2_000_000));
+
+  // The other remedy: the same settings, applying from the first epoch that was not closed yet.
+  const other = threeDays();
+  for (const epoch of ["2026-11-12", "2026-11-13", "2026-11-14"]) other.toDisk(epoch, 1);
+  assert.doesNotThrow(() => other.toDisk("2026-11-15", 2, {}, "2026-11-15"));
+});
+
+test("--allow-partial waits until an hour after the epoch ends, when its last hour has been taken", () => {
+  const { dataDir, denylistPath } = makeDataDir({
+    snapshots: hourly(start, () => ({ [ACCOUNTS.a]: { husdt: 10 } })).filter((_, h) => h < 7),
+  });
+  const program = parseProgram(
+    "name: t\napplies_from_epoch: 2026-11-12\nbudget_per_day:\n  HUSDC: 1\n  HUSDT: 1\n" +
+      "epoch_start_hour_utc: 14\nearn_on_supply_of: [HUSDC, HUSDT]\nmax_hollar_debt_usd: 5\n",
+    config,
+    { requireDecisions: true },
+  );
+  const partial = (now: number) =>
+    closeEpochToDisk({
+      dataDir,
+      epoch: EPOCH,
+      program,
+      config,
+      denylist: loadDenylist(denylistPath),
+      genesis: true,
+      allowPartial: true,
+      now,
+    });
+  const end = start + 86_400;
+  assert.throws(
+    () => partial(start + 8 * 3600),
+    /epoch 2026-11-12 ends at 2026-11-13T14:00:00.000Z and its last hour is taken just after; --allow-partial is accepted from 2026-11-13T15:00:00.000Z/,
+  );
+  // Just after the end the runner may not have taken the last hour yet.
+  assert.throws(() => partial(end + 60), /is accepted from 2026-11-13T15:00:00.000Z/);
+  assert.throws(() => partial(end + 3599), /is accepted from/);
+  assert.equal(partial(end + 3600).summary.snapshots.length, 7);
+});
+
+test("leftovers of a close that stopped before its tree are not replaced silently, and the refusal says why", () => {
+  // An earlier close of 2026-11-12, with other budgets, wrote its CSV and summary and stopped before
+  // its tree. (A tree removed by hand after its root was posted looks the same, so nothing is replaced
+  // without --overwrite.)
+  const { dataDir, denylistPath, toDisk } = threeDays();
+  const earlier = close(dataDir, denylistPath, { budgets: new Map([...BUDGETS, ["HUSDT", 7n]]) });
+  writeText(join(dataDir, "epochs", "2026-11-12.csv"), earlier.csv);
+  writeText(join(dataDir, "epochs", "2026-11-12.summary.json"), toJson(earlier.summary));
+
+  assert.throws(
+    () => toDisk("2026-11-12", 1),
+    /2026-11-12\.csv, .*2026-11-12\.summary\.json differ from this close, and 2026-11-12 has no tree: either an earlier close stopped before writing it \(it produced no root, so pass --overwrite\), or the tree was removed by hand \(put it back instead\)/,
+  );
+  assert.equal(readFileSync(join(dataDir, "epochs", "2026-11-12.csv"), "utf8"), earlier.csv);
+  const { tree } = toDisk("2026-11-12", 1, { overwrite: true });
+  assert.ok(existsSync(join(dataDir, "trees", "2026-11-12.json")));
+  assert.ok(existsSync(join(dataDir, "public", "trees", `${tree.root}.json`)));
+  // The same leftovers with the same result: done again without a word.
+  rmSync(join(dataDir, "trees", "2026-11-12.json"));
+  assert.doesNotThrow(() => toDisk("2026-11-12", 1));
+});
+
+test("program refusals name the remedy for the case they are in", () => {
+  // The first epoch, with a file that applies from a later one.
+  const first = threeDays();
+  assert.throws(
+    () => first.toDisk("2026-11-12", 1, {}, "2026-11-13"),
+    /epoch 2026-11-12 would be the first epoch, but this program file applies from 2026-11-13: start with --first-epoch 2026-11-13, or set applies_from_epoch to 2026-11-12/,
+  );
+
+  // Closed again by hand on the newest epoch with a file that came too late: the date to move to is
+  // the first epoch with no tree, not the one being closed.
+  const late = threeDays();
+  for (const epoch of ["2026-11-12", "2026-11-13", "2026-11-14"]) late.toDisk(epoch, 1);
+  assert.throws(
+    () => late.toDisk("2026-11-14", 2, { overwrite: true }, "2026-11-13"),
+    /otherwise set applies_from_epoch to 2026-11-15, the first epoch not closed yet/,
+  );
+
+  // The older file loaded after a newer one took over: restart with the newer one.
+  const older = threeDays();
+  older.toDisk("2026-11-12", 1);
+  older.toDisk("2026-11-13", 2, {}, "2026-11-13");
+  assert.throws(
+    () => older.toDisk("2026-11-14", 1),
+    /epoch 2026-11-13 was closed with a newer program file \(0x[0-9a-f]{64}, which applies from 2026-11-13\) than this one \(applies from 2026-11-12\); restart the runner with that file/,
+  );
+});
+
+test("the chain and program checks refuse when the file they need is missing", () => {
+  const first = threeDays();
+  first.toDisk("2026-11-12", 1);
+  first.toDisk("2026-11-13", 1);
+  rmSync(join(first.dataDir, "trees", "2026-11-12.json"));
+  assert.throws(
+    () => first.toDisk("2026-11-14", 1),
+    /the tree for 2026-11-13 builds on 2026-11-12 with root 0x[0-9a-f]{64}, but there is no stored tree for 2026-11-12/,
+  );
+
+  const second = threeDays();
+  second.toDisk("2026-11-12", 1);
+  second.toDisk("2026-11-13", 1);
+  rmSync(join(second.dataDir, "epochs", "2026-11-13.summary.json"));
+  assert.throws(() => second.toDisk("2026-11-14", 1), /epoch 2026-11-13 was closed with no recorded program file/);
+});
+
+test("an epoch cannot be closed again with another result once a later epoch builds on it", () => {
+  const { toDisk, stored } = threeDays();
+  toDisk("2026-11-12", 1);
+  toDisk("2026-11-13", 1);
+  const before = stored("2026-11-12");
+
+  // --overwrite only replaced the epoch's own files, so 2026-11-13 kept building on the old tree.
+  assert.throws(
+    () => toDisk("2026-11-12", 2, { overwrite: true }),
+    /2026-11-13 is already closed on top of 2026-11-12 as it is stored; .* move the outputs of 2026-11-12 and of every later epoch aside/,
+  );
+  assert.equal(stored("2026-11-12"), before);
+  // The same result again changes nothing, so it is still allowed.
+  assert.doesNotThrow(() => toDisk("2026-11-12", 1));
+});
+
+test("an epoch cannot be closed after a later one was closed without it", () => {
+  const { dataDir, toDisk } = threeDays();
+  toDisk("2026-11-12", 1);
+  // 2026-11-13 was skipped by hand with --allow-gap.
+  toDisk("2026-11-14", 1, { previousTreePath: join(dataDir, "trees", "2026-11-12.json"), allowGap: true });
+  assert.throws(() => toDisk("2026-11-13", 1), /2026-11-14 is already closed without 2026-11-13/);
+});
+
+test("a close builds only on the stored chain: the stored previous tree, which builds on the stored one before it", () => {
+  const { dataDir, denylistPath, toDisk } = threeDays();
+  const e12 = toDisk("2026-11-12", 1);
+  toDisk("2026-11-13", 1);
+
+  // A previous tree passed in from elsewhere that is not the stored one.
+  const otherDir = mkdtempSync(join(tmpdir(), "hydration-rewards-"));
+  const elsewhere = join(otherDir, "2026-11-13.json");
+  const other13 = close(dataDir, denylistPath, {
+    epoch: "2026-11-13",
+    genesis: false,
+    previousTreePath: e12.treePath,
+    budgets: new Map([...BUDGETS, ["HUSDT", 7n]]),
+  }).tree;
+  writeFileSync(elsewhere, toJson(other13));
+  assert.throws(() => toDisk("2026-11-14", 1, { previousTreePath: elsewhere }), /is not the one stored for 2026-11-13/);
+
+  // 2026-11-12 replaced on disk after 2026-11-13 was built on it (by hand, or by an older version of
+  // this tool): the next close finds the link broken instead of carrying the old tree forward.
+  const replaced = close(dataDir, denylistPath, { budgets: new Map([...BUDGETS, ["HUSDT", 7n]]) }).tree;
+  storeTree(dataDir, replaced);
+  assert.throws(
+    () => toDisk("2026-11-14", 1),
+    /the tree for 2026-11-13 builds on 2026-11-12 with root 0x[0-9a-f]{64}, but the stored tree for 2026-11-12 has root .*: 2026-11-12 was closed again after 2026-11-13 was built on it/,
+  );
+
+  // A previous tree for an epoch the data directory holds no tree for.
+  const fresh = makeDataDir({ snapshots: hourly(epochWindow("2026-11-13", START_HOUR).start, () => ({})) });
+  assert.throws(
+    () =>
+      close(fresh.dataDir, fresh.denylistPath, { epoch: "2026-11-13", genesis: false, previousTreePath: e12.treePath }),
+    /the previous tree is for 2026-11-12, but .* holds no tree for that epoch/,
+  );
 });

@@ -4,10 +4,20 @@
 
 import { readFileSync } from "node:fs";
 import { parse } from "yaml";
+import { epochDayStart } from "./lib/epoch.ts";
 import { sha256 } from "./lib/io.ts";
 import type { Config, Program } from "./types.ts";
 
-const PROGRAM_KEYS = ["name", "budget_per_day", "epoch_start_hour_utc", "earn_on_supply_of", "max_hollar_debt_usd"];
+const PROGRAM_KEYS = [
+  "name",
+  "applies_from_epoch",
+  "budget_per_day",
+  "epoch_start_hour_utc",
+  "earn_on_supply_of",
+  "max_hollar_debt_usd",
+];
+// Undecided settings may be left out as well as left blank; closing an epoch needs them all.
+const DECISIONS = ["applies_from_epoch", "epoch_start_hour_utc"];
 
 function distance(a: string, b: string): number {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
@@ -39,7 +49,7 @@ export function toRawUnits(text: unknown, decimals: number, where: string): bigi
 }
 
 // text: the file's contents. config: config/mainnet.json. Returns a checked program.
-// With requireDecisions, a blank budget or start hour is an error (closing an epoch);
+// With requireDecisions, a blank budget, start hour or first epoch is an error (closing an epoch);
 // without it they come back as null (previewing).
 export function parseProgram(
   text: string,
@@ -54,7 +64,7 @@ export function parseProgram(
   for (const key of Object.keys(doc))
     if (!PROGRAM_KEYS.includes(key)) throw notKnown(`${source}: setting`, key, PROGRAM_KEYS);
   for (const key of PROGRAM_KEYS) {
-    if (!(key in doc) && key !== "epoch_start_hour_utc") throw new Error(`${source}: "${key}" is missing`);
+    if (!(key in doc) && !DECISIONS.includes(key)) throw new Error(`${source}: "${key}" is missing`);
   }
 
   const supplyAssets = Object.keys(config.supplyAssets);
@@ -100,6 +110,22 @@ export function parseProgram(
     throw new Error(`${source}: epoch_start_hour_utc is blank; fill it in before closing an epoch`);
   }
 
+  // The first epoch this file pays. A close of an earlier epoch with it is refused, and so is a close
+  // after it that does not follow one made with this same file (src/close-epoch.ts).
+  let appliesFromEpoch: string | null = null;
+  if (!blank(doc.applies_from_epoch)) {
+    appliesFromEpoch = String(doc.applies_from_epoch);
+    try {
+      epochDayStart(appliesFromEpoch);
+    } catch {
+      throw new Error(`${source}: applies_from_epoch must be a date like 2027-01-15, got ${appliesFromEpoch}`);
+    }
+  } else if (requireDecisions) {
+    throw new Error(
+      `${source}: applies_from_epoch is blank; write the first epoch this file pays before closing an epoch`,
+    );
+  }
+
   // Never optional: a blank here must not turn into "HOLLAR borrowers earn too".
   if (blank(doc.max_hollar_debt_usd)) {
     throw new Error(
@@ -109,7 +135,15 @@ export function parseProgram(
   const maxHollarDebt = toRawUnits(doc.max_hollar_debt_usd, 2, `${source}: max_hollar_debt_usd`) * 10n ** 24n;
 
   if (blank(doc.name)) throw new Error(`${source}: name is blank`);
-  return { name: String(doc.name), earn, budgetPerDay, startHourUtc, maxHollarDebt, sha256: sha256(text) };
+  return {
+    name: String(doc.name),
+    earn,
+    budgetPerDay,
+    startHourUtc,
+    appliesFromEpoch,
+    maxHollarDebt,
+    sha256: sha256(text),
+  };
 }
 
 export function loadProgram(path: string, config: Config, options: { requireDecisions?: boolean } = {}): Program {

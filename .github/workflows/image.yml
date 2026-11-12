@@ -1,0 +1,55 @@
+name: Image
+
+# Builds the runner's image (Dockerfile) for linux/amd64 on GitHub's runners and pushes it to the
+# private GHCR package ghcr.io/divljo31/hydration-rewards, tagged latest and with the commit.
+# Nothing is deployed from here: the stack (docker/stack.yml) is updated by hand in Swarmpit, because
+# a new program file has to go live between two closes.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["master"]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "package.json"
+      - "package-lock.json"
+      - "src/**"
+      - "config/**"
+      - "programs/**"
+      - ".github/workflows/image.yml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/divljo31/hydration-rewards
+
+jobs:
+  build:
+    name: Build and push
+    # A manual run from another branch must not replace the image production pulls.
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push
+        run: |
+          docker buildx build --platform linux/amd64 \
+            --build-arg VCS_REF="$GITHUB_SHA" \
+            --tag "$IMAGE:latest" --tag "$IMAGE:$GITHUB_SHA" \
+            --push .

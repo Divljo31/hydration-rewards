@@ -1,11 +1,6 @@
 {
-  "note": "Provisional. palletAccounts denies every modl-prefixed address (Substrate pallet accounts and sub-accounts). Confirm each address with the team before the first live epoch.",
-  "rules": { "palletAccounts": true },
-  "addresses": [{ "address": "0x6d6f646c70792f74727372790000000000000000", "label": "Treasury (modlpy/trsry)" }],
-  "unresolved": [
-    "Second account under the explorer's Treasury tag (the explorer shows 2 members)",
-    "Pallet pot (explorer tag pallet-pots): confirm its address",
-    "ICE pot: confirm its address",
-    "Stableswap pool accounts that hold aHUSDC or aHUSDT, if any"
-  ]
+  "note": "Nobody is excluded: no rule is on and no address is listed. Every account that holds an earning asset's aToken can earn, pallet accounts and the Treasury included.",
+  "rules": { "palletAccounts": false },
+  "addresses": [],
+  "unresolved": []
 }

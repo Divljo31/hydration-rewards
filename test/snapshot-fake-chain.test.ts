@@ -2,13 +2,14 @@
 // without a network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SELECTORS, TRANSFER_TOPIC, ZERO_ADDRESS } from "../src/lib/abi.ts";
 import { updateHolderIndex } from "../src/lib/holders.ts";
 import { RpcError } from "../src/lib/rpc.ts";
-import { takeSnapshot } from "../src/snapshot.ts";
+import { checkSelection } from "../src/lib/selection.ts";
+import { snapshotHour, takeSnapshot } from "../src/snapshot.ts";
 import type { Config, Rpc, RpcRequest } from "../src/types.ts";
 
 const A = (n: number): string => `0x${n.toString(16).padStart(40, "0")}`;
@@ -105,6 +106,7 @@ function chain({
 
   const config: Config = {
     rpc: "http://node.test",
+    chainId: 222222,
     reward: { symbol: "PRIME", assetId: 43, address: A(0x2b), decimals: 6 },
     epoch: { snapshotsPerEpoch: 24 },
     logs: { maxBlockSpan: 8 },
@@ -139,14 +141,17 @@ function chain({
 }
 
 const BLOCK = { number: 40, hash: `0x${"ab".repeat(32)}`, timestamp: 1_800_000_000 };
+// Block 40 is the third of the hour's five (38 to 42); the seed block 43's hash picks it.
+const SELECTION = { firstBlock: 38, blocks: 5, seed: { number: 43, hash: `0x${"0".repeat(63)}7` }, index: 2 };
 const statePath = () => join(mkdtempSync(join(tmpdir(), "hydration-holders-")), "holders.json");
 const snapshot = ({ rpc, config }: { rpc: Rpc; config: Config }) =>
-  takeSnapshot({ rpc, config, block: BLOCK, target: BLOCK.timestamp, holdersPath: statePath() });
+  takeSnapshot({ rpc, config, block: BLOCK, selection: SELECTION, target: BLOCK.timestamp, holdersPath: statePath() });
 
 test("a snapshot records balances, HOLLAR debt per market and prices for every holder", async () => {
   const s = await snapshot(chain({ holders: [USERS.a, USERS.b, USERS.c] }));
   assert.equal(s.holders, 3);
   assert.equal(s.target, BLOCK.timestamp);
+  assert.deepEqual(s.selection, SELECTION);
   assert.equal(s.reserves.HUSDC.price, "102000000");
   assert.equal(s.reserves.HUSDC.holdersSum, s.reserves.HUSDC.totalSupply);
   assert.deepEqual(Object.keys(s.debtAssets), ["HOLLAR"]);
@@ -324,4 +329,63 @@ test("the tail of the index can be scanned again to pick up a holder the node le
     rewind: 1_000,
   });
   assert.deepEqual(all.addresses, [USERS.a, USERS.b]);
+});
+
+test("one holder-index scan at a time, and a scan that fails still releases the lock", async () => {
+  const path = statePath();
+  const { rpc } = chain({ logs: [{ address: AT.HUSDC, block: 3, to: USERS.a }] });
+  const options = { path, tokens: [AT.HUSDC, AT.HUSDT], fromBlock: 1, toBlock: 20, maxSpan: 8 };
+
+  // Another process is scanning: the runner, while a rescan by hand starts.
+  writeFileSync(`${path}.lock`, JSON.stringify({ pid: process.ppid, host: hostname(), token: "runner" }));
+  await assert.rejects(updateHolderIndex({ ...options, rpc }), /the holder index is in use by process/);
+  assert.equal(existsSync(path), false, "nothing was scanned");
+  rmSync(`${path}.lock`);
+
+  const down = {
+    async call(): Promise<unknown> {
+      throw new Error("node down");
+    },
+  };
+  await assert.rejects(updateHolderIndex({ ...options, rpc: down }), /node down/);
+  assert.equal(existsSync(`${path}.lock`), false, "released although the scan failed");
+  assert.deepEqual((await updateHolderIndex({ ...options, rpc })).addresses, [USERS.a]);
+});
+
+test("snapshotHour stores the hour's snapshot at the block that the hash of the block after the hour picks", async () => {
+  const { rpc, config } = chain({ holders: [USERS.a, USERS.b, USERS.c] });
+  const hour = 360_000;
+  // One block every 6 seconds: block 10 is the first of the hour, block 610 the first after it.
+  const block = (n: number) => ({
+    number: `0x${n.toString(16)}`,
+    hash: `0x${n.toString(16).padStart(64, "0")}`,
+    timestamp: `0x${(hour - 60 + 6 * n).toString(16)}`,
+  });
+  const node: Rpc = {
+    batch: rpc.batch,
+    async call(method: string, params: unknown[]) {
+      if (method === "eth_chainId") return "0x3640e";
+      if (method === "eth_getBlockByNumber") {
+        const tag = String(params[0]);
+        return block(tag === "finalized" ? 700 : Number(BigInt(tag)));
+      }
+      return rpc.call(method, params);
+    },
+  };
+  const dataDir = mkdtempSync(join(tmpdir(), "hydration-rewards-"));
+  const { path, snapshot } = await snapshotHour({ rpc: node, config, dataDir, target: hour });
+
+  assert.equal(path, join(dataDir, "snapshots", `${hour}.json`));
+  // 600 candidates, blocks 10 to 609; the seed's hash, 610 here, picks index 10: block 20.
+  assert.deepEqual(snapshot.selection, {
+    firstBlock: 10,
+    blocks: 600,
+    seed: { number: 610, hash: `0x${(610).toString(16).padStart(64, "0")}` },
+    index: 10,
+  });
+  assert.equal(snapshot.block.number, 20);
+  assert.equal(snapshot.target, hour);
+  assert.equal(snapshot.holders, 3);
+  assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), snapshot);
+  assert.doesNotThrow(() => checkSelection(snapshot.selection, snapshot.block.number, path)); // what the closer checks
 });

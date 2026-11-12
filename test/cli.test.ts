@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { epochWindow } from "../src/close-epoch.ts";
 import { loadDotEnv } from "../src/lib/io.ts";
 import { ACCOUNTS, hourly, makeDataDir } from "./helpers.ts";
@@ -20,6 +20,7 @@ function run(script: string, ...args: string[]) {
 }
 
 const programText = (husdt: number) => `name: cli test
+applies_from_epoch: 2026-11-12
 budget_per_day:
   HUSDC: 1
   HUSDT: ${husdt}
@@ -156,6 +157,11 @@ test("snapshot only accepts a whole hour, and has no way to pick a block or an e
   assert.equal(offTheHour.status, 1);
   assert.match(offTheHour.err, /must be a multiple of 3600 seconds/);
 
+  // Without its zone the time would be read in this machine's zone: refused before anything is read.
+  const noZone = run("snapshot.ts", "--at", "2026-11-12T15:00:00", "--data", data, "--rpc", "http://127.0.0.1:1");
+  assert.equal(noZone.status, 1);
+  assert.match(noZone.err, /--at takes unix seconds or a time with its zone/);
+
   for (const flag of ["--block", "--epoch", "--epoch-start-hour"]) {
     const r = run("snapshot.ts", flag, "1", "--data", data);
     assert.equal(r.status, 1);
@@ -176,4 +182,35 @@ test("a .env file is read, and a variable already set in the environment wins ov
   assert.equal(process.env.REWARDS_TEST_FROM_FILE, "file");
   assert.equal(process.env.REWARDS_TEST_EMPTY, "");
   assert.doesNotThrow(() => loadDotEnv(mkdtempSync(join(tmpdir(), "hydration-env-")))); // no file, nothing to do
+});
+
+test("--index-only refuses a node that serves another chain before it scans anything", () => {
+  const data = mkdtempSync(join(tmpdir(), "hydration-rewards-"));
+  // A node for chain 1, loaded into the process in place of the network.
+  const stub = join(mkdtempSync(join(tmpdir(), "hydration-stub-")), "fetch-stub.mjs");
+  writeFileSync(
+    stub,
+    "globalThis.fetch = async (_url, init) => {\n" +
+      "  const body = JSON.parse(init.body);\n" +
+      '  const answer = (r) => ({ jsonrpc: "2.0", id: r.id, result: r.method === "eth_chainId" ? "0x1" : null });\n' +
+      "  return new Response(JSON.stringify(Array.isArray(body) ? body.map(answer) : answer(body)));\n" +
+      "};\n",
+  );
+  const r = spawnSync(
+    process.execPath,
+    [
+      "--import",
+      pathToFileURL(stub).href,
+      join(root, "src", "snapshot.ts"),
+      "--index-only",
+      "--data",
+      data,
+      "--rpc",
+      "http://node.invalid",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(r.status, 1, r.stdout);
+  assert.match(r.stderr, /serves chain 1, but the config is for chain 222222/);
+  assert.equal(existsSync(join(data, "state")), false);
 });

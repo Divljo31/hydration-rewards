@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Hourly snapshot: chain state at one block -> data/snapshots/<hour>.json
 //
-// The block is the first finalized block at or after the hour. At that block it reads:
+// The block is one of the hour's own blocks, picked by the hash of the first block after the hour
+// (src/lib/selection.ts), so an hour can only be taken once it is over and that block is finalized.
+// The node must serve the chain id in the config. At that block it reads:
 //   - aHUSDC / aHUSDT balance of every indexed address, and each aToken's total supply
 //   - HOLLAR variable debt on main, GIGAHDX and BIL (the only debt that counts; config debtAssets)
 //   - each market's AaveOracle price for every asset involved
@@ -10,7 +12,7 @@
 // do not add up to an aToken's total supply.
 //
 // Usage:
-//   node src/snapshot.ts --at 2026-11-12T15:00:00Z     the hour, as a time or unix seconds
+//   node src/snapshot.ts --at 2026-11-12T15:00:00Z     the hour, as a time with its zone or unix seconds
 //   node src/snapshot.ts --index-only                   extend data/state/holders.json only
 //   node src/snapshot.ts --index-only --rescan 50000    the same, scanning the last 50,000 indexed blocks again
 
@@ -24,8 +26,9 @@ import { decodeAddress, decodeReserveData, decodeUint, ethCall, SELECTORS, ZERO_
 import { usdRounded } from "./lib/format.ts";
 import { updateHolderIndex } from "./lib/holders.ts";
 import { makeRpc, toBlockTag } from "./lib/rpc.ts";
+import { pickIndex } from "./lib/selection.ts";
 import { SNAPSHOT_FORMAT } from "./eligibility.ts";
-import type { Block, Config, Log, Rpc, Snapshot } from "./types.ts";
+import type { Block, Config, Log, Rpc, Snapshot, SnapshotSelection } from "./types.ts";
 
 const ORACLE_UNIT = 10n ** 8n; // values are computed as 18-decimal amounts × 8-decimal prices
 const DAY = 86_400;
@@ -40,8 +43,9 @@ async function getBlock(rpc: Pick<Rpc, "call">, tag: string): Promise<Block> {
   return { number: Number(BigInt(b.number)), hash: b.hash, timestamp: Number(BigInt(b.timestamp)) };
 }
 
-// The first block whose timestamp is at or after `target`, once it is finalized.
-export async function blockAtOrAfter(rpc: Pick<Rpc, "call">, target: number): Promise<Block> {
+// The first block whose timestamp is at or after `target`, once it is finalized. `from` is a block
+// known to come no later than the answer, which narrows the search.
+export async function blockAtOrAfter(rpc: Pick<Rpc, "call">, target: number, from = 1): Promise<Block> {
   const finalized = await getBlock(rpc, "finalized");
   if (finalized.timestamp < target) {
     // The bot waits on this code instead of reporting a failure.
@@ -50,7 +54,7 @@ export async function blockAtOrAfter(rpc: Pick<Rpc, "call">, target: number): Pr
       { code: "NOT_FINALIZED" },
     );
   }
-  let lo = 1;
+  let lo = Math.max(1, Math.min(from, finalized.number));
   let hi = finalized.number;
   while (lo < hi) {
     const mid = Math.floor((lo + hi) / 2);
@@ -58,6 +62,50 @@ export async function blockAtOrAfter(rpc: Pick<Rpc, "call">, target: number): Pr
     else lo = mid + 1;
   }
   return getBlock(rpc, toBlockTag(hi));
+}
+
+// The block a snapshot of the hour [target, target + interval) is taken at, and how it was picked:
+// the hash of the first block after the hour chooses one of the hour's blocks (src/lib/selection.ts).
+// Until that block is finalized this throws NOT_FINALIZED, which the runner waits on.
+export async function snapshotBlock(
+  rpc: Pick<Rpc, "call">,
+  target: number,
+  interval: number,
+): Promise<{ block: Block; selection: SnapshotSelection }> {
+  const first = await blockAtOrAfter(rpc, target);
+  if (first.timestamp >= target + interval) {
+    // The closer only accepts a block inside its hour, so storing another one would wedge the epoch.
+    throw Object.assign(
+      new Error(
+        `the chain produced no block between ${target} and ${target + interval} (the next one is at ${first.timestamp}); ` +
+          "this hour cannot be snapshotted, so its epoch has to be closed with --allow-partial",
+      ),
+      { code: "NO_BLOCK_IN_HOUR" },
+    );
+  }
+  const seed = await blockAtOrAfter(rpc, target + interval, first.number);
+  const blocks = seed.number - first.number;
+  const index = pickIndex(seed.hash, blocks);
+  const block = index === 0 ? first : await getBlock(rpc, toBlockTag(first.number + index));
+  if (block.number !== first.number + index || block.timestamp < target || block.timestamp >= target + interval) {
+    throw new Error(`block ${block.number} at ${block.timestamp} is not inside the hour from ${target}`);
+  }
+  return {
+    block,
+    selection: { firstBlock: first.number, blocks, seed: { number: seed.number, hash: seed.hash }, index },
+  };
+}
+
+// The node must serve the chain the config describes. A node for another network would pass every
+// other check whose addresses happen to exist there.
+export async function checkChainId(rpc: Pick<Rpc, "call">, config: Config): Promise<void> {
+  const raw = await rpc.call("eth_chainId", []);
+  const id = typeof raw === "string" && /^0x[0-9a-f]+$/i.test(raw) ? Number(BigInt(raw)) : null;
+  if (id === null || id !== config.chainId) {
+    throw new Error(
+      `the RPC node serves chain ${id ?? JSON.stringify(raw)}, but the config is for chain ${config.chainId}`,
+    );
+  }
 }
 
 const holderIndex = ({
@@ -104,6 +152,7 @@ export async function takeSnapshot({
   rpc,
   config,
   block,
+  selection,
   target,
   holdersPath,
   log = () => {},
@@ -111,6 +160,7 @@ export async function takeSnapshot({
   rpc: Rpc;
   config: Config;
   block: Block;
+  selection: SnapshotSelection;
   target: number;
   holdersPath: string;
   log?: Log;
@@ -278,6 +328,7 @@ export async function takeSnapshot({
     format: SNAPSHOT_FORMAT,
     target,
     block,
+    selection,
     markets,
     reserves: Object.fromEntries(
       earning.map(([name]) => {
@@ -321,27 +372,23 @@ export async function snapshotHour({
   if (!Number.isInteger(target) || target % interval !== 0) {
     throw new Error(`a snapshot time must be a multiple of ${interval} seconds (on the hour), got ${target}`);
   }
-  const block = await blockAtOrAfter(rpc, target);
-  if (block.timestamp >= target + interval) {
-    // The closer only accepts a block inside its hour, so storing this one would wedge the epoch.
-    throw Object.assign(
-      new Error(
-        `the chain produced no block between ${target} and ${target + interval} (the next one is at ${block.timestamp}); ` +
-          "this hour cannot be snapshotted, so its epoch has to be closed with --allow-partial",
-      ),
-      { code: "NO_BLOCK_IN_HOUR" },
-    );
-  }
+  await checkChainId(rpc, config);
+  const { block, selection } = await snapshotBlock(rpc, target, interval);
   const holdersPath = join(dataDir, "state", "holders.json");
-  const snapshot = await takeSnapshot({ rpc, config, block, target, holdersPath, log });
+  const snapshot = await takeSnapshot({ rpc, config, block, selection, target, holdersPath, log });
   const path = join(dataDir, "snapshots", `${target}.json`);
   if (existsSync(path)) log(`replacing ${path}`);
   writeText(path, toJson(snapshot));
   return { path, snapshot };
 }
 
-function parseTime(text: string): number {
+// --at: unix seconds, or a time with its zone (2027-01-15T15:00:00Z or +01:00). Without a zone, Date
+// reads the time in this machine's zone and the snapshot would quietly be of another hour.
+export function parseTime(text: string): number {
   if (/^\d+$/.test(text)) return Number(text);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/i.test(text)) {
+    throw new Error(`--at takes unix seconds or a time with its zone, like 2027-01-15T15:00:00Z; got ${text}`);
+  }
   const ms = Date.parse(text);
   if (Number.isNaN(ms)) throw new Error(`cannot read time ${text}`);
   return Math.floor(ms / 1000);
@@ -361,11 +408,14 @@ async function main() {
     },
   });
   const config = readJson<Config>(a.config);
-  const rpc = makeRpc(a.rpc ?? process.env.RPC_HYDRATION ?? config.rpc, { batchSize: config.rpcBatchSize });
+  const rpc = makeRpc(a.rpc || process.env.RPC_HYDRATION || config.rpc, { batchSize: config.rpcBatchSize });
   const holdersPath = join(a.data, "state", "holders.json");
   const log: Log = (line) => console.error(line);
+  // A scan stopped by hand (Ctrl-C) exits through process.exit, which releases the holder-index lock.
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => process.exit(1));
 
   if (a["index-only"]) {
+    await checkChainId(rpc, config);
     const toBlock = (await getBlock(rpc, "finalized")).number;
     const rewind = a.rescan === undefined ? 0 : Number(a.rescan);
     if (!Number.isInteger(rewind) || rewind < 0) throw new Error(`--rescan takes a number of blocks, got ${a.rescan}`);
@@ -376,7 +426,7 @@ async function main() {
 
   if (!a.at) throw new Error("pass --at <time>");
   const { path, snapshot } = await snapshotHour({ rpc, config, dataDir: a.data, target: parseTime(a.at), log });
-  const { block } = snapshot;
+  const { block, selection } = snapshot;
 
   const value = (name: string): bigint =>
     Object.values(snapshot.accounts).reduce(
@@ -402,7 +452,8 @@ async function main() {
   console.log(
     [
       path,
-      `  block ${block.number} (${new Date(block.timestamp * 1000).toISOString()}), ${snapshot.holders} holders`,
+      `  block ${block.number} (${new Date(block.timestamp * 1000).toISOString()}), block ${selection.index + 1} of ` +
+        `the hour's ${selection.blocks}, picked by block ${selection.seed.number}; ${snapshot.holders} holders`,
       ...Object.keys(snapshot.reserves).map((n) => `  ${n}: ${usdRounded(value(n))} supplied`),
       ...debt,
     ].join("\n"),

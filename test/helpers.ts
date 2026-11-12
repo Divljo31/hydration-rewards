@@ -38,8 +38,10 @@ export function holding({
   };
 }
 
-// `target` is the hour the snapshot was taken for; the block is the first one at or after it.
+// `target` is the hour the snapshot was taken for. The selection says the hour had one block, so the
+// block after it picks that one (src/lib/selection.ts).
 // Addresses and supplies of the reserves are placeholders: nothing downstream of a snapshot reads them.
+export const hashOf = (n: number): string => `0x${n.toString(16).padStart(64, "0")}`;
 export function makeSnapshot({
   number,
   timestamp,
@@ -68,7 +70,8 @@ export function makeSnapshot({
   return {
     format: SNAPSHOT_FORMAT,
     target,
-    block: { number, hash: `0x${number.toString(16).padStart(64, "0")}`, timestamp },
+    block: { number, hash: hashOf(number), timestamp },
+    selection: { firstBlock: number, blocks: 1, seed: { number: number + 1, hash: hashOf(number + 1) }, index: 0 },
     markets: {},
     reserves: { HUSDC: reserve("HUSDC", 1), HUSDT: reserve("HUSDT", 2) },
     debtAssets: { HOLLAR: { decimals: 18, markets: { main: debt(1), gigahdx: debt(2), bil: debt(3) } } },

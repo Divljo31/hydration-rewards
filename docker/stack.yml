@@ -1,0 +1,41 @@
+# Stack for Docker Swarm (Swarmpit): the rewards runner and its data volume.
+version: "3.3"
+services:
+  # Hourly snapshots and daily epochs (src/bot.ts). One replica only: the runner locks its data
+  # directory, so the old task has to stop before the new one starts (the default update order).
+  bot:
+    # Built and pushed by .github/workflows/image.yml. The package is private, so ghcr.io has to be a
+    # linked registry in Swarmpit.
+    image: ghcr.io/divljo31/hydration-rewards:latest
+    # A fixed hostname lets the task that replaces a crashed one take the data-directory lock over
+    # within about 2½ minutes, instead of waiting 10 minutes for it to go stale.
+    hostname: hydration-rewards-bot
+    environment:
+      # Date of the very first epoch, the same as applies_from_epoch in the program file.
+      FIRST_EPOCH: FILL THIS DATE ALWAYS
+      # An archive node: catching up reads state at blocks up to 72 hours old.
+      RPC_HYDRATION: https://rpc.hydradx.cloud
+    volumes:
+      - data:/data
+    networks:
+      - default
+    logging:
+      driver: json-file
+    stop_grace_period: 30s
+    deploy:
+      replicas: 1
+      # No swarmpit autoredeploy label: the program file is part of the image, and a new one has to
+      # go live between two closes (README, "Changing the program").
+      update_config:
+        failure_action: rollback
+      restart_policy:
+        condition: any
+        delay: 30s
+      resources:
+        limits:
+          memory: 1G
+
+volumes:
+  # The runner's only state, and the files the app reads under public/. Back it up.
+  data:
+    driver: local

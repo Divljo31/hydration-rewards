@@ -11,7 +11,7 @@
 
 import { existsSync } from "node:fs";
 import { compareAddresses } from "./accounts.ts";
-import { readJson, toJson, writeText } from "./io.ts";
+import { acquireLock, readJson, toJson, writeText } from "./io.ts";
 import { TRANSFER_TOPIC, ZERO_ADDRESS } from "./abi.ts";
 import { toBlockTag } from "./rpc.ts";
 import type { Log, Rpc } from "../types.ts";
@@ -36,7 +36,18 @@ const isQueryLimit = (error: unknown): boolean =>
   /timeout|too many|limit/i.test(String((error as { message?: unknown } | null)?.message));
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function updateHolderIndex({
+// One scan at a time: two processes extending the same index (the runner, and a --rescan run by hand)
+// would each save their own address set, and the last save would drop what the other one found.
+export async function updateHolderIndex(options: Parameters<typeof scanHolders>[0]): Promise<HolderIndex> {
+  const release = acquireLock(`${options.path}.lock`, "the holder index");
+  try {
+    return await scanHolders(options);
+  } finally {
+    release();
+  }
+}
+
+async function scanHolders({
   rpc,
   path,
   tokens,

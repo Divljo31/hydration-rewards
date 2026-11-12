@@ -17,19 +17,31 @@ import { messageOf, readJson, writeText } from "./lib/io.ts";
 import { usdExact, usdNumber, usdRounded } from "./lib/format.ts";
 import { allocate } from "./allocate.ts";
 import { epochWindow, loadEpochSnapshots } from "./close-epoch.ts";
-import { epochEligibility } from "./eligibility.ts";
+import { epochEligibility, SNAPSHOT_FORMAT } from "./eligibility.ts";
 import { loadDenylist } from "./lib/denylist.ts";
 import { loadProgram } from "./program.ts";
 import type { Config, Denylist, Program, RewardConfig, Snapshot } from "./types.ts";
 
 const pct = (part: number, whole: number): string => (whole > 0 ? `${((100 * part) / whole).toFixed(1)}%` : "-");
 
+// A snapshot file this version can read, or an error that names the file and what to do about it.
+function readSnapshot(path: string): Snapshot {
+  const s = readJson<Snapshot>(path);
+  if (s?.format !== SNAPSHOT_FORMAT) {
+    throw new Error(
+      `${path} is not a ${SNAPSHOT_FORMAT} snapshot (it says ${JSON.stringify(s?.format)}); ` +
+        "snapshots taken by an older version have to be taken again with src/snapshot.ts",
+    );
+  }
+  return s;
+}
+
 function loadSnapshots(
   a: { snapshot?: string; epoch?: string; data: string },
   program: Program,
   perEpoch: number,
 ): Snapshot[] {
-  if (a.snapshot) return [readJson<Snapshot>(a.snapshot)];
+  if (a.snapshot) return [readSnapshot(a.snapshot)];
   const dir = join(a.data, "snapshots");
   if (!existsSync(dir)) {
     throw new Error(`no snapshots under ${dir}; this machine has no snapshot data yet (a developer can provide it)`);
@@ -49,7 +61,7 @@ function loadSnapshots(
     .sort((x, y) => parseInt(x, 10) - parseInt(y, 10))
     .slice(-perEpoch);
   if (files.length === 0) throw new Error(`no snapshots in ${dir}; take one with src/snapshot.ts`);
-  return files.map((f) => readJson<Snapshot>(join(dir, f)));
+  return files.map((f) => readSnapshot(join(dir, f)));
 }
 
 export interface PreviewRow {
@@ -139,7 +151,11 @@ export function previewProgram(
       );
     }
   } else {
-    lines.push("budget_per_day is blank, so no amounts are shown. Fill it in to see what each account would get.");
+    const blanks = [...program.budgetPerDay].filter(([, budget]) => budget === null).map(([asset]) => asset);
+    lines.push(
+      `budget_per_day is blank for ${blanks.join(" and ")}, so no amounts are shown. ` +
+        "Fill it in to see what each account would get.",
+    );
   }
   if (denylist.provisional)
     lines.push('\nNote: the excluded-accounts list is provisional (see its "unresolved" entries).');
