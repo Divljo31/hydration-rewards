@@ -1,10 +1,10 @@
-# PRIME on HUSDC and HUSDT, only for accounts that have not borrowed HOLLAR.
+# PRIME on HUSDC, HUSDT and HEURC, only for accounts that have not borrowed HOLLAR.
 # See programs/README.md for every setting.
 #
 # Check the effect before changing anything live:
 #   node src/preview.ts --program programs/htoken-no-hollar-borrowers.yaml
 
-name: HUSDC and HUSDT, no HOLLAR borrowers
+name: HUSDC, HUSDT and HEURC, no HOLLAR borrowers
 
 # The first daily epoch these settings pay, as the UTC date it starts on (like 2027-01-15). Every
 # change to this file moves it to an epoch that has not been closed yet: closing an earlier epoch
@@ -17,11 +17,12 @@ applies_from_epoch:
 budget_per_day:
   HUSDC:
   HUSDT:
+  HEURC:
 
 # Hour of the day (UTC, 0-23) when each daily epoch starts. Blank until decided.
 epoch_start_hour_utc:
 
-earn_on_supply_of: [HUSDC, HUSDT]
+earn_on_supply_of: [HUSDC, HUSDT, HEURC]
 
 # An account with more HOLLAR debt than this (in dollars, added up over the main, GIGAHDX and
 # BIL markets) earns nothing for that hour; hours without the debt still count. 0 means any

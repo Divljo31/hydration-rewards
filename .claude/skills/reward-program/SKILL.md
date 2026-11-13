@@ -1,6 +1,6 @@
 ---
 name: reward-program
-description: Change the PRIME reward program for Hydration from a plain-language description, check its effect on real snapshots, and open a pull request for review. Use this whenever someone wants to change who earns PRIME on HUSDC/HUSDT, how strictly HOLLAR borrowers are excluded, a daily budget, the epoch start hour, which H-tokens earn, or asks "what would happen if…" about these incentives — even if they never mention YAML, programs/ or the preview script.
+description: Change the PRIME reward program for Hydration from a plain-language description, check its effect on real snapshots, and open a pull request for review. Use this whenever someone wants to change who earns PRIME on HUSDC/HUSDT/HEURC, how strictly HOLLAR borrowers are excluded, a daily budget, the epoch start hour, which H-tokens earn, or asks "what would happen if…" about these incentives — even if they never mention YAML, programs/ or the preview script.
 ---
 
 # The reward program
@@ -23,13 +23,14 @@ skill is about being accurate and explaining clearly, not about speed.
 ## Only use what exists
 
 The program reader stops on anything it does not recognise, so inventing a setting just produces
-an error. The whole strategy is fixed: accounts earn on their HUSDC and HUSDT supply unless they
-have borrowed HOLLAR. What can be changed is:
+an error. The whole strategy is fixed: accounts earn on their HUSDC, HUSDT and HEURC supply unless
+they have borrowed HOLLAR. What can be changed is:
 
 - `applies_from_epoch` — the first daily epoch the settings pay (a UTC date); every change moves it
 - `budget_per_day` — PRIME per day for each earning asset
 - `epoch_start_hour_utc` — the hour each daily epoch starts
-- `earn_on_supply_of` — `HUSDC`, `HUSDT` or both
+- `earn_on_supply_of` — any of `HUSDC`, `HUSDT` and `HEURC`; each one listed needs its own line
+  in `budget_per_day`
 - `max_hollar_debt_usd` — an account with more HOLLAR debt than this (added up over main,
   GIGAHDX and BIL) earns nothing for that hour; `0` means any debt disqualifies
 

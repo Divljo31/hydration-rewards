@@ -6,7 +6,7 @@ result into a cumulative Merkle root for Morpho's Universal Rewards Distributor 
 claim from. The URD is Morpho's contract, unmodified, pinned at
 `3de504b130835a12482e00e1c83dcf369448c80b`; `tools/check-pin.ts` fails if anyone edits it.
 
-The program pays PRIME on HUSDC and HUSDT only to accounts that have not borrowed HOLLAR:
+The program pays PRIME on HUSDC, HUSDT and HEURC only to accounts that have not borrowed HOLLAR:
 `programs/htoken-no-hollar-borrowers.yaml`. An account with HOLLAR debt above the program's
 allowance earns nothing for the hours it has that debt. Only HOLLAR debt counts; debt in other
 assets is not recorded. A different strategy is a code change, not a setting.
@@ -92,7 +92,9 @@ of its epoch. They are format `hydration-rewards-snapshot/2`: snapshots taken by
 (format /1, at the first block of each hour) are not read, so move them aside, and the runner takes
 those hours again within its 72-hour backlog (older ones by hand with `--at`). Outputs go under
 `data/`, which is not checked in. The first snapshot scans aToken
-Transfer logs from the aTokens' deploy block, which takes a long time on the public RPC; the scan
+Transfer logs from the aTokens' deploy block, which takes a long time on the public RPC. The index
+is built for the earning assets in `config/mainnet.json`: after one is added there, move
+`data/state/holders.json` aside and let it be built again. The scan
 resumes where it stopped (`node src/snapshot.ts --index-only` runs it on its own, and
 `--index-only --rescan <blocks>` scans its tail again if a snapshot reports missing holders). One
 process updates the index at a time (`data/state/holders.json.lock`): a scan by hand stops while
@@ -235,10 +237,10 @@ The deployer needs an `EVMAccounts.ContractDeployer` slot on Hydration. The migr
 the URD is the pinned, unmodified commit, deploys it in one transaction with the multisig as owner
 (the deployer never holds a role), writes the record, and runs the checks below. It refuses to run
 again while a production record exists. The multisig then adds the root-posting key with
-`setRootUpdater(<key>, true)`, and the checks are run once more with that key:
+`setRootUpdater(<root-posting address>, true)`, and the checks are run once more with that address:
 
 ```sh
-npm run verify:distributor -- <root-posting key>
+npm run verify:distributor -- <root-posting address>
 ```
 
 `verify` needs no key and sends nothing. Do not fund the URD until it passes. If it fails, leave
@@ -248,7 +250,7 @@ that URD empty and deploy a new one; do not try to repair it. It checks:
    look-alike with a backdoor would answer every getter the same), the multisig is the owner (the
    handover completed), the timelock is the one in the settings, no root is set or pending (a
    deployer that set the timelock to zero first can make its root acceptable at once), the deployer
-   holds no role, and the root-posting key, when given, is an updater.
+   holds no role, and the root-posting address, when given, is an updater.
 2. The creation transaction (`tools/distributor-deployment.ts`): it creates the contract directly,
    it was sent by the deployer, and its input is exactly the pinned URD's creation code followed by
    the expected constructor arguments. Code with the right bytes can still come from init code that
@@ -269,13 +271,14 @@ forge script script/DeployRewardsDistributor.s.sol --rpc-url "$RPC_HYDRATION" --
 node ../tools/distributor-deployment.ts record prod && npm run verify:distributor
 ```
 
-With a root-posting key in `URD_UPDATER` in the settings, the script deploys in three transactions
-instead (create, add the updater, hand ownership to the multisig), and the deployer owns the URD in
-between: it could submit a root of its own, or make itself an updater, before the handover. Prefer
-the single transaction. After a three-transaction deployment, also list what the deployer did while
-it owned the URD. The script sends its three transactions back to back, so the handover lands
-within minutes of the creation block; list the first 1,000 blocks (about 40 minutes, well within
-what the public node answers):
+With the root-posting address in `URD_UPDATER` in the settings, the multisig has nothing to send:
+the script deploys in three transactions instead (create, add the updater, hand ownership to the
+multisig), and the checks include that address without it being passed. The deployer owns the URD
+in between: it could submit a root of its own, or make itself an updater, before the handover.
+Prefer the single transaction. After a three-transaction deployment, also list what the deployer
+did while it owned the URD. The script sends its three transactions back to back, so the handover
+lands within minutes of the creation block; list the first 1,000 blocks (about 40 minutes, well
+within what the public node answers):
 
 ```sh
 cast logs --rpc-url "$RPC_HYDRATION" --address <URD> --from-block <creation block> \
@@ -329,7 +332,8 @@ root and restarts its clock.
 ## Open decisions
 
 - PRIME budget per day for each asset. Referendum 423 pays 275.616 PRIME/day each to HUSDC and
-  HUSDT on gross balances until 1800021600 (15 Jan 2027 14:00 UTC).
+  HUSDT on gross balances until 1800021600 (15 Jan 2027 14:00 UTC). HEURC's stream has already
+  ended, so its budget is new PRIME.
 - Epoch start hour and the cutover date (the first epoch, and the program's `applies_from_epoch`).
   The live stream is stopped at the first epoch's start, and what is left in its pot moves to the
   URD, by one referendum.

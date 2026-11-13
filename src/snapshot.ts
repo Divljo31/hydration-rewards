@@ -4,7 +4,7 @@
 // The block is one of the hour's own blocks, picked by the hash of the first block after the hour
 // (src/lib/selection.ts), so an hour can only be taken once it is over and that block is finalized.
 // The node must serve the chain id in the config. At that block it reads:
-//   - aHUSDC / aHUSDT balance of every indexed address, and each aToken's total supply
+//   - aHUSDC / aHUSDT / aHEURC balance of every indexed address, and each aToken's total supply
 //   - HOLLAR variable debt on main, GIGAHDX and BIL (the only debt that counts; config debtAssets)
 //   - each market's AaveOracle price for every asset involved
 // Pools, oracles and token addresses are resolved at that block through each PoolAddressesProvider.

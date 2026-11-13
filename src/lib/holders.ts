@@ -1,4 +1,4 @@
-// Every address that ever received aHUSDC or aHUSDT, built from Transfer logs and kept in
+// Every address that ever received an earning asset's aToken, built from Transfer logs and kept in
 // data/state/holders.json so each snapshot only scans the blocks since the last one.
 //
 // Hydration's node serves Substrate-originated EVM activity as synthetic transactions (sender

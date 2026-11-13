@@ -8,17 +8,18 @@ the exact file it used, so any payout can be traced back to the settings that pr
 ## The settings
 
 ```yaml
-name: HUSDC and HUSDT, no HOLLAR borrowers    # any description
+name: HUSDC, HUSDT and HEURC, no HOLLAR borrowers   # any description
 
 applies_from_epoch: 2027-01-15                # the first daily epoch these settings pay
 
 budget_per_day:                               # PRIME per day, one line per earning asset
   HUSDC: 275.616                              # plain numbers, up to 6 decimal places
   HUSDT: 275.616
+  HEURC: 100                                  # each asset has a budget of its own
 
 epoch_start_hour_utc: 14                      # hour (UTC) each daily epoch starts
 
-earn_on_supply_of: [HUSDC, HUSDT]             # whose supply earns
+earn_on_supply_of: [HUSDC, HUSDT, HEURC]      # whose supply earns
 
 max_hollar_debt_usd: 5                        # more HOLLAR debt than this: nothing for that hour
 ```
@@ -56,10 +57,10 @@ value over the day. With a fixed budget, the fewer accounts are eligible, the mo
 per dollar.
 
 No account is excluded by name: the Treasury and pallet accounts are treated like any other holder of
-supplied HUSDC or HUSDT, and the HOLLAR rule applies to them too.
+supplied HUSDC, HUSDT or HEURC, and the HOLLAR rule applies to them too.
 `config/denylist.json`, which a developer maintains, can exclude accounts, and it is empty.
 
-What you can change here is the budget, the start hour, which of HUSDC and HUSDT earn, the
+What you can change here is the budget, the start hour, which of HUSDC, HUSDT and HEURC earn, the
 HOLLAR allowance, and the epoch a change starts from. Anything else — other assets, other kinds of
 debt, a different rule — needs a developer.
 

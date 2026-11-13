@@ -37,6 +37,12 @@
       "underlying": "0x000000000000000000000000000000010000006f",
       "aToken": "0x1806860d27ee903c1ec7586d4f7d598d7591f124",
       "deployBlock": 9333147
+    },
+    "HEURC": {
+      "market": "main",
+      "underlying": "0x000000000000000000000000000000010000273c",
+      "aToken": "0x49f925bf72718f4abbc57adef1b705931f928a2a",
+      "deployBlock": 11926917
     }
   },
   "debtAssets": {

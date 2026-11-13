@@ -40,6 +40,12 @@ node "$ROOT_DIR/tools/distributor-deployment.ts" record "$ENV"
 bash "$ROOT_DIR/sh/verify-distributor.sh" "$ENV"
 
 echo
-echo "Next: the owner calls setRootUpdater(<root-posting key>, true), then"
-echo "  bash sh/verify-distributor.sh $ENV <root-posting key>"
-echo "No PRIME goes to the distributor before that check passes."
+if [ -n "${URD_UPDATER:-}" ]; then
+  echo "The deployer added $URD_UPDATER as root updater and handed the distributor to $URD_OWNER."
+  echo "Next: list what the deployer did while it owned it (README.md, \"Deploying the distributor\")."
+  echo "No PRIME goes to the distributor before that."
+else
+  echo "Next: the owner calls setRootUpdater(<root-posting address>, true), then"
+  echo "  bash sh/verify-distributor.sh $ENV <root-posting address>"
+  echo "No PRIME goes to the distributor before that check passes."
+fi

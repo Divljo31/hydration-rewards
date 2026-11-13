@@ -132,6 +132,24 @@ test("mistakes stop the run with a message a non-developer can act on", () => {
   );
 });
 
+test("HEURC earns next to HUSDC and HUSDT, with a budget of its own", () => {
+  const p = parseProgram(
+    program({
+      earn_on_supply_of: "earn_on_supply_of: [HUSDC, HUSDT, HEURC]",
+      budget_per_day: "budget_per_day:\n  HUSDC: 1\n  HUSDT: 1\n  HEURC: 2.5",
+    }),
+    config,
+    { requireDecisions: true },
+  );
+  assert.deepEqual(p.earn, ["HUSDC", "HUSDT", "HEURC"]);
+  assert.equal(p.budgetPerDay.get("HEURC"), 2_500_000n);
+  // Earning without a budget line of its own is refused.
+  assert.throws(
+    () => parseProgram(program({ earn_on_supply_of: "earn_on_supply_of: [HUSDC, HUSDT, HEURC]" }), config),
+    /no line for HEURC/,
+  );
+});
+
 test("settings from other strategies are refused, not ignored", () => {
   for (const line of [
     "rules:\n  - subtract_debt: [HOLLAR]",
