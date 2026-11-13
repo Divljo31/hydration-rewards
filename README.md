@@ -172,15 +172,29 @@ closes (see Changing the program). That is why the stack does not redeploy by it
 image is pushed.
 
 `.github/workflows/image.yml` builds the image for linux/amd64 on every push to `master` that touches
-it and publishes the same build to `docker.io/galacticcouncil/hydration-rewards` and
-`ghcr.io/galacticcouncil/hydration-rewards`, tagged `latest` and with the full commit SHA. The workflow
-checks that both registries return the same digest. It deploys nothing.
+it and publishes to `ghcr.io/galacticcouncil/hydration-rewards`, tagged `latest` and with the full
+commit SHA. With Docker Hub credentials configured, it publishes the same build to
+`docker.io/galacticcouncil/hydration-rewards` and checks that both registries return the same digest.
+It deploys nothing.
 
-Docker Hub publishing uses the repository Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`;
-the token must have push access to `galacticcouncil/hydration-rewards`. GHCR uses the workflow's
+Automatic Docker Hub publishing uses the repository Actions secrets `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN`; the token must have push access to `galacticcouncil/hydration-rewards`. With neither
+secret configured, the workflow reports that Docker Hub publishing is not configured; setting only
+one is an error. GHCR uses the workflow's
 `GITHUB_TOKEN` with `packages: write`. The image's source label links the GHCR package to this
 repository. New GHCR packages start private; choose visibility in the package settings before
 expecting anonymous pulls. The Swarm stack uses the Docker Hub image.
+
+To publish to both registries using local Docker logins, without copying credentials into GitHub:
+
+```sh
+revision=$(git rev-parse HEAD)
+docker buildx build --platform linux/amd64 --build-arg VCS_REF="$revision" \
+  --tag "docker.io/galacticcouncil/hydration-rewards:$revision" \
+  --tag docker.io/galacticcouncil/hydration-rewards:latest \
+  --tag "ghcr.io/galacticcouncil/hydration-rewards:$revision" \
+  --tag ghcr.io/galacticcouncil/hydration-rewards:latest --push .
+```
 
 ## Files for the app
 
