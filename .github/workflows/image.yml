@@ -1,23 +1,12 @@
 name: Image
 
-# Builds the runner's image (Dockerfile) for linux/amd64 on GitHub's runners and pushes it to the
-# Docker Hub and Galactic Council GHCR, tagged latest and with the commit.
+# Optional manual publishing on GitHub's runners. Normal releases use local Docker logins.
+# Builds linux/amd64 for Galactic Council GHCR and, when configured, Docker Hub.
 # Nothing is deployed from here: the stack (docker/stack.yml) is updated by hand in Swarmpit, because
 # a new program file has to go live between two closes.
 
 on:
   workflow_dispatch:
-  push:
-    branches: ["master"]
-    paths:
-      - "Dockerfile"
-      - ".dockerignore"
-      - "package.json"
-      - "package-lock.json"
-      - "src/**"
-      - "config/**"
-      - "programs/**"
-      - ".github/workflows/image.yml"
 
 permissions:
   contents: read

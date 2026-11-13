@@ -171,18 +171,22 @@ running one has closed the epoch before the new file's `applies_from_epoch`, and
 closes (see Changing the program). That is why the stack does not redeploy by itself when a new
 image is pushed.
 
-`.github/workflows/image.yml` builds the image for linux/amd64 on every push to `master` that touches
-it and publishes to `ghcr.io/galacticcouncil/hydration-rewards`, tagged `latest` and with the full
-commit SHA. With Docker Hub credentials configured, it publishes the same build to
-`docker.io/galacticcouncil/hydration-rewards` and checks that both registries return the same digest.
-It deploys nothing.
+Images are normally published locally to Docker Hub and Galactic Council GHCR, using the command
+below and the local Docker logins. Both registries receive `latest` and the full commit SHA.
+No registry credential needs to be copied into GitHub.
 
-Automatic Docker Hub publishing uses the repository Actions secrets `DOCKERHUB_USERNAME` and
+`.github/workflows/image.yml` is an optional, manually dispatched fallback on `master`; it does not
+run on pushes or deploy a service. It builds linux/amd64 for `ghcr.io/galacticcouncil/hydration-rewards`.
+With Docker Hub credentials configured, it publishes the same build to
+`docker.io/galacticcouncil/hydration-rewards` and checks that both registries return the same digest.
+
+Using the optional workflow for Docker Hub requires the repository Actions secrets `DOCKERHUB_USERNAME` and
 `DOCKERHUB_TOKEN`; the token must have push access to `galacticcouncil/hydration-rewards`. With neither
 secret configured, the workflow reports that Docker Hub publishing is not configured; setting only
 one is an error. GHCR uses the workflow's
-`GITHUB_TOKEN` with `packages: write`. The image's source label links the GHCR package to this
-repository. New GHCR packages start private; choose visibility in the package settings before
+`GITHUB_TOKEN` with `packages: write` and package Actions write access for this repository. The
+image's source label links the GHCR package to this repository. New GHCR packages start private;
+choose visibility in the package settings before
 expecting anonymous pulls. The Swarm stack uses the Docker Hub image.
 
 To publish to both registries using local Docker logins, without copying credentials into GitHub:
