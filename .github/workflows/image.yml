@@ -1,7 +1,7 @@
 name: Image
 
 # Builds the runner's image (Dockerfile) for linux/amd64 on GitHub's runners and pushes it to the
-# private GHCR package ghcr.io/divljo31/hydration-rewards, tagged latest and with the commit.
+# Docker Hub and Galactic Council GHCR, tagged latest and with the commit.
 # Nothing is deployed from here: the stack (docker/stack.yml) is updated by hand in Swarmpit, because
 # a new program file has to go live between two closes.
 
@@ -28,7 +28,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/divljo31/hydration-rewards
+  DOCKERHUB_IMAGE: docker.io/galacticcouncil/hydration-rewards
+  GHCR_IMAGE: ghcr.io/galacticcouncil/hydration-rewards
 
 jobs:
   build:
@@ -47,9 +48,26 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          : "${DOCKERHUB_USERNAME:?Set the DOCKERHUB_USERNAME repository secret}"
+          : "${DOCKERHUB_TOKEN:?Set the DOCKERHUB_TOKEN repository secret}"
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+
       - name: Build and push
         run: |
           docker buildx build --platform linux/amd64 \
             --build-arg VCS_REF="$GITHUB_SHA" \
-            --tag "$IMAGE:latest" --tag "$IMAGE:$GITHUB_SHA" \
+            --tag "$DOCKERHUB_IMAGE:latest" --tag "$DOCKERHUB_IMAGE:$GITHUB_SHA" \
+            --tag "$GHCR_IMAGE:latest" --tag "$GHCR_IMAGE:$GITHUB_SHA" \
             --push .
+
+      - name: Verify matching registry digests
+        run: |
+          hub_digest=$(docker buildx imagetools inspect "$DOCKERHUB_IMAGE:$GITHUB_SHA" --format '{{.Manifest.Digest}}')
+          ghcr_digest=$(docker buildx imagetools inspect "$GHCR_IMAGE:$GITHUB_SHA" --format '{{.Manifest.Digest}}')
+          test -n "$hub_digest" && test "$hub_digest" = "$ghcr_digest"
+          printf 'Both registries published %s\n' "$hub_digest"

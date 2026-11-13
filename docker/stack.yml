@@ -4,9 +4,8 @@ services:
   # Hourly snapshots and daily epochs (src/bot.ts). One replica only: the runner locks its data
   # directory, so the old task has to stop before the new one starts (the default update order).
   bot:
-    # Built and pushed by .github/workflows/image.yml. The package is private, so ghcr.io has to be a
-    # linked registry in Swarmpit.
-    image: ghcr.io/divljo31/hydration-rewards:latest
+    # Built and pushed by .github/workflows/image.yml; mirrored to Galactic Council GHCR.
+    image: galacticcouncil/hydration-rewards:latest
     # A fixed hostname lets the task that replaces a crashed one take the data-directory lock over
     # within about 2½ minutes, instead of waiting 10 minutes for it to go stale.
     hostname: hydration-rewards-bot

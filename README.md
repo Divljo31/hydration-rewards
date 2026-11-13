@@ -172,8 +172,15 @@ closes (see Changing the program). That is why the stack does not redeploy by it
 image is pushed.
 
 `.github/workflows/image.yml` builds the image for linux/amd64 on every push to `master` that touches
-it and pushes it to the private GHCR package `ghcr.io/divljo31/hydration-rewards`, tagged `latest` and
-with the commit. It deploys nothing.
+it and publishes the same build to `docker.io/galacticcouncil/hydration-rewards` and
+`ghcr.io/galacticcouncil/hydration-rewards`, tagged `latest` and with the full commit SHA. The workflow
+checks that both registries return the same digest. It deploys nothing.
+
+Docker Hub publishing uses the repository Actions secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`;
+the token must have push access to `galacticcouncil/hydration-rewards`. GHCR uses the workflow's
+`GITHUB_TOKEN` with `packages: write`. The image's source label links the GHCR package to this
+repository. New GHCR packages start private; choose visibility in the package settings before
+expecting anonymous pulls. The Swarm stack uses the Docker Hub image.
 
 ## Files for the app
 

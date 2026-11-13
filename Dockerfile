@@ -16,6 +16,7 @@ FROM node:26-bookworm-slim
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.title="hydration-rewards" \
+      org.opencontainers.image.source="https://github.com/galacticcouncil/hydration-rewards" \
       org.opencontainers.image.revision="${VCS_REF}"
 
 ENV NODE_ENV=production \
